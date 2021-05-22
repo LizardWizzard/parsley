@@ -1,4 +1,4 @@
-use futures::{future::join_all, Future};
+use futures::future::join_all;
 use glommio::{channels::shared_channel::ConnectedReceiver, sync::Semaphore, timer};
 use histogram::Histogram;
 use rand::{prelude::ThreadRng, Rng};
@@ -11,7 +11,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::Arc,
-    task::{Poll, Waker},
+    task::Waker,
     time::{Duration, Instant},
     vec,
 };
@@ -19,9 +19,12 @@ use std::{
 use glommio::{channels::shared_channel::ConnectedSender, prelude::*};
 use std::ops::Deref;
 
-use crate::datum::{BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage, MemoryStorage, PMemDatumStorage};
+use crate::datum::{
+    BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage, MemoryStorage, PMemDatumStorage,
+};
 
 use super::enums::{Data, HealthcheckError, Message, RestoreError, RestoreStatus, ShardRole};
+use super::forward_futures::{ForwardedGet, ForwardedSet};
 
 pub fn get_local_remote_bounds(shard_id: usize) -> ((u8, u8), ((u8, u8), (u8, u8))) {
     if shard_id == 0 {
@@ -52,15 +55,21 @@ pub fn get_remote_percentage() -> usize {
     remote_percentage
 }
 
-
-
 pub fn get_write_percentage(shard_id: usize, workload: &Workload) -> usize {
     let mut write_percentage: usize = env::var("WRITE_PERCENTAGE").unwrap().parse().unwrap();
-    let workloads = [Workload::StorageWorkloadA, Workload::StorageWorkloadB, Workload::StorageWorkloadC];
+    let workloads = [
+        Workload::StorageWorkloadA,
+        Workload::StorageWorkloadB,
+        Workload::StorageWorkloadC,
+    ];
     if workloads.contains(workload) && shard_id == 1 {
         write_percentage = 100 - write_percentage
     }
-    log::info!("shard={:} using write percentage={:}", shard_id, write_percentage);
+    log::info!(
+        "shard={:} using write percentage={:}",
+        shard_id,
+        write_percentage
+    );
     write_percentage
 }
 
@@ -228,82 +237,6 @@ pub fn get_benchmark_range_map<RangeMapType: RangeMap<Vec<u8>, ShardDatum>>() ->
     rangemap
 }
 
-struct ForwardedGet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
-    id: usize,
-    shard: Rc<RefCell<Shard<RangeMapType>>>,
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> ForwardedGet<RangeMapType> {
-    fn new(id: usize, shard: Rc<RefCell<Shard<RangeMapType>>>) -> Self {
-        Self { id, shard }
-    }
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
-    for ForwardedGet<RangeMapType>
-{
-    type Output = Option<Vec<u8>>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        // of there is no value -> insert waker with None result
-        // else if there is value but no result, update waker
-        // if result exists ready
-        let mut shard = self.shard.borrow_mut();
-        let (waker, result) = shard
-            .forwarded_get
-            .entry(self.id)
-            .or_insert((Some(cx.waker().clone()), None));
-        match result.take() {
-            None => {
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Some(response) => {
-                shard.forwarded_get.remove(&self.id);
-                Poll::Ready(response)
-            }
-        }
-    }
-}
-
-struct ForwardedSet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
-    id: usize,
-    shard: Rc<RefCell<Shard<RangeMapType>>>,
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> ForwardedSet<RangeMapType> {
-    fn new(id: usize, shard: Rc<RefCell<Shard<RangeMapType>>>) -> Self {
-        Self { id, shard }
-    }
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
-    for ForwardedSet<RangeMapType>
-{
-    type Output = ();
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        // of there is no value -> insert waker with None result
-        // else if there is value but no result, update waker
-        // if result exists ready
-        let mut shard = self.shard.borrow_mut();
-        let (waker, result) = shard
-            .forwarded_set
-            .entry(self.id)
-            .or_insert((Some(cx.waker().clone()), None));
-        match result.take() {
-            None => {
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Some(response) => {
-                shard.forwarded_set.remove(&self.id);
-                Poll::Ready(response)
-            }
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Stats {
     // served by direct calls on this shard
@@ -320,11 +253,6 @@ pub struct Stats {
     pub forwarded_deletes: usize,
 }
 
-// impl Display for Stats {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.write_str("")
-//     }
-// }
 // FIXME kind of custom inefficient Display :)
 pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
     stat: &Stats,
@@ -334,7 +262,9 @@ pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
 ) -> String {
     let own = format!(
         "served_own_gets={:} served_own_sets={:} served_own_deletes={:}",
-        stat.served_own_gets, stat.served_own_sets - 91125, stat.served_own_deletes
+        stat.served_own_gets,
+        stat.served_own_sets - 91125,
+        stat.served_own_deletes
     );
     let served_forwarded = format!(
         "served_forwarded_gets={:} served_forwarded_sets={:} served_forwarded_deletes={:}",
@@ -393,7 +323,9 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             storages: vec![
                 DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
                 DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
-                DatumStorage::LSMTreeModelStorage(Rc::new(RefCell::new(LSMTreeModelStorage::new()))),
+                DatumStorage::LSMTreeModelStorage(Rc::new(
+                    RefCell::new(LSMTreeModelStorage::new()),
+                )),
                 DatumStorage::PMemStorage(Rc::new(RefCell::new(PMemDatumStorage::new(id)))),
             ],
             stats: Stats::default(),
@@ -408,7 +340,6 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
         self.op_counter += 1;
         self.op_counter
     }
-
 
     async fn send_to(&self, idx: usize, msg: Data<RangeMapType>) {
         self.senders[idx]
@@ -552,7 +483,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
         Self::benchmark(new_self.clone()).await;
         new_self
     }
-    
+
     fn benchmark_get_datum_storage(&self) -> DatumStorage {
         let workload_param = env::var("WORKLOAD");
         let storage = match workload_param {
@@ -743,7 +674,6 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             };
             let read_write_value = ctx.rng.gen_range(Range { start: 0, end: 100 });
 
-
             let (first, second, third) = gen_three(&mut ctx.rng, target_bounds.0, target_bounds.1);
             let mut key = vec![255; ctx.key_length];
             key[0] = first;
@@ -801,7 +731,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             datum,
             instance.clone(),
             histo,
-            workload,  
+            workload,
         );
         match workload {
             Workload::ReadLocal100 => Shard::benchmark_read_local_100(&mut ctx).await,
@@ -811,7 +741,9 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             Workload::StorageWorkloadA => Shard::benchmark_read_write_local_remote(&mut ctx).await,
             Workload::StorageWorkloadB => Shard::benchmark_read_write_local_remote(&mut ctx).await,
             Workload::StorageWorkloadC => Shard::benchmark_read_write_local_remote(&mut ctx).await,
-            Workload::PMemStorageWorkload => Shard::benchmark_read_write_local_remote(&mut ctx).await,
+            Workload::PMemStorageWorkload => {
+                Shard::benchmark_read_write_local_remote(&mut ctx).await
+            }
         }
 
         println!(
@@ -983,10 +915,10 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
     // async fn set(&mut self, key: &[u8], value: &[u8]) {
     async fn set(instance: &Rc<RefCell<Self>>, key: Vec<u8>, value: Vec<u8>) {
         let mut borrowed = instance.borrow_mut();
-        let rangespec = borrowed.rangemap.get(&key).unwrap();//.expect(&format!(
-            // "always should be some range. key: {:?} contents {:?}",
-            // &key, borrowed.rangemap
-        // ));
+        let rangespec = borrowed.rangemap.get(&key).unwrap(); //.expect(&format!(
+                                                              // "always should be some range. key: {:?} contents {:?}",
+                                                              // &key, borrowed.rangemap
+                                                              // ));
         let shard_id = rangespec.data.shard_id;
         let datum_id = rangespec.data.datum_id;
 
