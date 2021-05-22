@@ -1,0 +1,23 @@
+[package]
+authors = ["dmitry"]
+edition = "2018"
+name = "core"
+version = "0.1.0"
+[dependencies]
+futures-lite = "*"
+futures = "*"
+log = "*"
+rand = "*"
+histogram = "*"
+
+[dependencies.glommio]
+path = "../../glommio/glommio"
+
+[dependencies.rangetree]
+path = "../rangetree"
+
+[dependencies.pmem_storage]
+path = "../pmem_storage"
+
+[dependencies.rangetree.glommio]
+path = "../../glommio/glommio"

@@ -1,0 +1,12 @@
+[package]
+name = "pmem_storage"
+version = "0.1.0"
+authors = ["dmitry"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# static_assertions = "1.1.0"
+memmap = "0.7.0"
+bitmaps = "3.1.0"

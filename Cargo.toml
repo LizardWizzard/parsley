@@ -1,0 +1,20 @@
+[package]
+authors = ["dmitry"]
+edition = "2018"
+name = "parsley"
+version = "0.1.0"
+
+[workspace]
+members = [".", "core", "rangetree", "pmem_storage"]
+
+[dependencies]
+futures = "*"
+enum_dispatch = "*"
+core = { path = "core" }
+rangetree = { path = "rangetree" }
+log = "*"
+env_logger = "*"
+glommio = { path = "../glommio/glommio" }
+
+[profile.release]
+debug = true
