@@ -174,6 +174,7 @@ where
             // FIXME in case of rangetype being vec if probe and key have different sizes comparison as is is broken
             // and have to be performed on slice of key of probe length, like probe < key[..probe.len()]
             // don't know yet how to express this requirement in generic code, may be require imple of RangeTo trait 
+            // TODO impl custom comparison trait which compares only min(a.len, b.len) items
             debug_assert!(probe.start.len() == key.len());
 
             if (probe.start.borrow() <= key) && (key <= probe.end.borrow()) {
@@ -183,12 +184,6 @@ where
             } else if probe.start.borrow() > key {
                 return Ordering::Greater;
             }
-            // TODO check invariants, including bounds excluded etc. ranges should be [)
-            println!(
-                "probe start {:?} probe end {:?} {:?}",
-                probe.start, probe.end, key
-            );
-            println!("contents {:?}", &self.items);
             unreachable!();
         });
         match result {

@@ -1,32 +1,25 @@
 use futures::future::join_all;
-use glommio::{channels::shared_channel::ConnectedReceiver, sync::Semaphore, timer};
-use histogram::Histogram;
-use rand::Rng;
+use glommio::channels::shared_channel::ConnectedReceiver;
 use rangetree::{RangeMap, RangeSpec, ReadonlyRangeMap};
 use std::{
-    cell::RefCell,
-    collections::HashMap,
-    convert::TryInto,
-    env,
-    ops::Range,
-    rc::Rc,
-    sync::Arc,
-    task::Waker,
-    time::{Duration, Instant},
-    vec,
+    cell::RefCell, collections::HashMap, env, rc::Rc, sync::Arc, task::Waker, time::Duration, vec,
 };
 
 use glommio::{channels::shared_channel::ConnectedSender, prelude::*};
 use std::ops::Deref;
 
 use crate::{datum::{
-    BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage, MemoryStorage, PMemDatumStorage,
-}, sharding::bench::{Workload, gen_three, get_benchmark_range_map}};
+        BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage,
+        PMemDatumStorage,
+    }, sharding::bench::get_benchmark_range_map, storage::memory::MemoryStorage};
 
-use super::{bench::{ShardBenchExt, get_local_remote_bounds, get_remote_percentage, get_write_percentage}, forward_futures::{ForwardedGet, ForwardedSet}};
 use super::{
     bench::Ctx,
     enums::{Data, HealthcheckError, Message, RestoreError, RestoreStatus, ShardRole},
+};
+use super::{
+    bench::ShardBenchExt,
+    forward_futures::{ForwardedGet, ForwardedSet},
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -63,8 +56,8 @@ pub fn get_initial_range_map<RangeMapType: RangeMap<Vec<u8>, ShardDatum>>(
     // restore or default
     let mut rangemap = RangeMapType::new();
     let default_range = RangeSpec::new(
-        vec![0, 0, 0, 0, 0, 0, 0],
-        vec![255, 255, 255, 255, 255, 255, 255],
+        vec![0; 16],
+        vec![255, 16],
         ShardDatum::new(shard_id, datum_id), // FIXME insert default datum on master shard in case its a clean start
     )
     .expect("always ok");
@@ -303,17 +296,6 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             shard_receivers,
         ))
         .detach();
-        // Local::executor_stats();
-        // form benchmark rangemap
-        // load data
-        // generate data
-        // measure
-        // .await;
-        // setup benchmark
-        // let (sender, receiver) = local_channel::new_bounded::<u32>(100);
-        // Local::local(Self::benchmark(new_self.clone()))
-        // .detach()
-        // .await;
         Local::later().await;
         let mut bench = ShardBenchExt::new(new_self.clone());
         bench.benchmark().await;
@@ -344,15 +326,12 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
                 } else {
                     log::info!("no workload special storage provided, using default one");
                     self.storages[0].clone()
-                    // panic!("unexpected workload")
                 }
             }
         };
         log::info!("shard {:} storage kind {:}", self.id, storage.get_kind());
         storage
     }
-
-
 
     async fn consume_from_other_shards(
         instance: Rc<RefCell<Self>>,
@@ -368,14 +347,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
             let join_handle =
                 Local::local(async move {
                     loop {
-                        // log::debug!("consuming in {:} from {:}", instance.borrow().id, idx);
                         if let Some(msg) = recv.recv().await {
-                            // log::debug!(
-                            //     "shard {:} recvd from {:} message {:?}",
-                            //     instance.borrow().id,
-                            //     idx,
-                            //     &msg
-                            // );
                             if msg.dst_id != instance.borrow().id {
                                 log::error!(
                                     "invalid dst id! Expected: {:} got {:}",
@@ -516,10 +488,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
     // async fn set(&mut self, key: &[u8], value: &[u8]) {
     pub async fn set(instance: &Rc<RefCell<Self>>, key: Vec<u8>, value: Vec<u8>) {
         let mut borrowed = instance.borrow_mut();
-        let rangespec = borrowed.rangemap.get(&key).unwrap(); //.expect(&format!(
-                                                              // "always should be some range. key: {:?} contents {:?}",
-                                                              // &key, borrowed.rangemap
-                                                              // ));
+        let rangespec = borrowed.rangemap.get(&key).unwrap();
         let shard_id = rangespec.data.shard_id;
         let datum_id = rangespec.data.datum_id;
 
@@ -536,7 +505,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
         }
         borrowed.stats.served_own_sets += 1;
         drop(borrowed);
-        instance.borrow_mut().datums[datum_id].set(key, value).await;
+        instance.borrow_mut().datums[datum_id].set(&key, &value).await;
     }
 
     pub async fn delete(&mut self, key: &[u8]) -> Option<()> {
@@ -565,8 +534,9 @@ mod tests {
         enums::{Data, Message},
     };
 
-    use super::*;
     use super::Placement;
+    use super::*;
+    use futures::join;
     use glommio::channels::shared_channel;
     use rangetree::RangeVec;
     use std::time::Duration;
@@ -581,6 +551,11 @@ mod tests {
             async { rx.connect().await }
         })
     }
+
+    fn key() -> Vec<u8> {
+        vec![1u8; 16]
+    }
+
     struct TestData {
         from_other_sender: ConnectedSender<Msg>, // sender from other shard to test one
         rc_to_other_receiver: Rc<RefCell<ConnectedReceiver<Msg>>>, // receiver from this shard to the other one
@@ -640,35 +615,26 @@ mod tests {
             .spawn(|| async move {
                 let test_data = TestData::new().await;
                 // check get set delete
-                test_data
-                    .shard
-                    .borrow_mut()
-                    .set(vec![1, 1, 1], vec![1, 1, 1])
-                    .await;
+                Shard::set(&test_data.shard, key(), key()).await;
                 assert_eq!(
-                    Shard::get(&test_data.shard, &vec![1, 1, 1]).await,
-                    Some(vec![1, 1, 1])
+                    Shard::get(&test_data.shard, key()).await,
+                    Some(key())
                 );
                 assert_eq!(
-                    test_data.shard.borrow_mut().delete(&vec![1, 1, 1]).await,
+                    test_data.shard.borrow_mut().delete(&key()).await,
                     Some(())
                 );
-                test_data
-                    .shard
-                    .borrow_mut()
-                    .set(vec![1, 1, 1], vec![1, 1, 1])
-                    .await;
                 // check concurrent get
                 join!(
-                    async { Shard::get(&test_data.shard, &vec![1, 1, 1]).await },
-                    async { Shard::get(&test_data.shard, &vec![1, 1, 1]).await }
+                    async { Shard::get(&test_data.shard, key()).await },
+                    async { Shard::get(&test_data.shard, key()).await }
                 );
                 // check set with more concurrency
                 join_all((0u8..100).into_iter().map(|_| {
                     let cloned = test_data.shard.clone();
                     async move {
                         assert_eq!(
-                            cloned.borrow_mut().set(vec![1, 1, 1], vec![1, 1, 1]).await,
+                            Shard::set(&cloned, key(), key()).await,
                             (),
                         );
                     }
@@ -683,7 +649,7 @@ mod tests {
                         0,
                         Data::GetRequest {
                             id: 1,
-                            key: vec![1, 1, 1],
+                            key: key(),
                         },
                     ))
                     .await
@@ -698,7 +664,7 @@ mod tests {
                         1,
                         Data::GetResponse {
                             id: 1,
-                            value: Some(vec![1, 1, 1])
+                            value: Some(key())
                         }
                     )
                 );

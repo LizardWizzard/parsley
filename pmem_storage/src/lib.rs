@@ -1,21 +1,14 @@
 #![feature(alloc_layout_extra)] // needed for handy Layout manipulations
 
-use std::{collections::BTreeMap, fs::OpenOptions, io, path::PathBuf, ptr};
+use std::{collections::BTreeMap, io, path::PathBuf, ptr};
 
 use alloc::PSlabAlloc;
 use bitmaps::{Bits, BitsImpl};
-use memmap::MmapMut;
 use pptr::PPtr;
 
-use crate::{
-    alloc::{map_mut, Slab},
-    persist::persist_range,
-};
+use crate::persist::persist_range;
 
-use std::{
-    mem,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 pub mod alloc;
 pub mod persist;
@@ -102,8 +95,8 @@ where
         // persist allocation
         unsafe { persist_range(new_allocation.ptr.vptr, new_allocation.size) };
         // emulating nvm latency as described in HiKV paper:
-        // assuming dram latency 60 ns, 3dxpoint's: 60 * 10, so busy sleep for 540 * size 
-        let for_sleep = Duration::from_nanos((new_allocation.size * 500) as u64);
+        // assuming dram latency 60 ns, 3dxpoint's: 60 * 10, so busy sleep for 540 * size
+        let for_sleep = Duration::from_nanos((new_allocation.size * 540) as u64);
         busy_sleep(for_sleep);
 
         // TODO maybe in the future make alloc guard which on drop flips needed bit in bitmap

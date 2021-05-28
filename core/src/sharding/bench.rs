@@ -361,6 +361,9 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
     }
     
     pub async fn benchmark(&mut self) {
+        if env::var("BENCHMARK").is_err() {
+            return;
+        }
         // wait for update of rangemap
         loop {
             if self.shard.borrow().datums.len() == 0 {

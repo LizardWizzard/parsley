@@ -1,9 +1,8 @@
 use std::{
     alloc::{Layout, LayoutError},
-    convert::TryInto,
     fs::{self, OpenOptions},
     io,
-    mem::{self, MaybeUninit},
+    mem,
     path::PathBuf,
     ptr,
 };
@@ -194,8 +193,11 @@ where
         }
         // iterate over existing slabs and try to find free slot
         // TODO maybe keep pointer for optimizations, i e first slab with free slot, advance it on alloc and move backward on dealloc
-        
-        for (idx, slab) in self.slabs[self.slab_with_free_slot as usize..].iter().enumerate() {
+
+        for (idx, slab) in self.slabs[self.slab_with_free_slot as usize..]
+            .iter()
+            .enumerate()
+        {
             if let Some(slot) = slab.free_slot() {
                 self.slab_with_free_slot = idx as isize;
                 return (idx, slot);
@@ -216,11 +218,7 @@ where
         let (slab_idx, offset) = self.get_free_slab();
         let vptr = self.slabs[slab_idx].vptr_for_offset(offset);
         Ok(PMemoryBlock {
-            ptr: PPtr::new(
-                slab_idx as u32,
-                offset as u32,
-                vptr as *mut u8,
-            ),
+            ptr: PPtr::new(slab_idx as u32, offset as u32, vptr as *mut u8),
             size: Slab::<BLOCK_SIZE, KEY_SIZE, VALUE_SIZE>::key_value_layout()
                 .unwrap()
                 .0
@@ -242,5 +240,5 @@ where
     }
 
     // // TODO impl as iterator
-    // pub fn 
+    // pub fn
 }
