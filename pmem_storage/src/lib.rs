@@ -141,7 +141,11 @@ mod tests {
         let config = Config::new(data_dir);
         for dir_entry in fs::read_dir(&config.base_dir).unwrap() {
             let path = dir_entry.unwrap().path();
-            fs::remove_file(path).unwrap();
+            if path.is_dir() {
+                fs::remove_dir_all(path).unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
         }
         let mut storage = PMemStorage::<64, 16, 256>::new(config);
         for i in 0..220 {

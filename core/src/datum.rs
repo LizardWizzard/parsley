@@ -106,7 +106,8 @@ impl PMemDatumStorage {
     pub fn new(shard_id: usize) -> Self {
         let mut base_dir = PathBuf::from_str("/tmp/ramdisk/data").unwrap();
         base_dir.push(format!("{:}", shard_id));
-        log::info!("{:?}", fs::create_dir(&base_dir));
+        let r = fs::create_dir(&base_dir);
+        log::info!("{:?}", &r);
         let cfg = Config::new(base_dir);
         // FIXME hardcode for benchmark
         for dir_entry in fs::read_dir(&cfg.base_dir).map_err(|_| panic!("does not exist{:?}", &cfg.base_dir)).unwrap() {

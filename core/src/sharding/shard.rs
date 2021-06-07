@@ -584,7 +584,7 @@ mod tests {
     struct TestData {
         from_other_sender: ConnectedSender<Msg>, // sender from other shard to test one
         rc_to_other_receiver: Rc<RefCell<ConnectedReceiver<Msg>>>, // receiver from this shard to the other one
-        shard: Rc<RefCell<Shard<RangeMapType>>>,
+        shard: Shard<RangeMapType>,
         other_recvd_messages: Rc<RefCell<Vec<Msg>>>,
     }
 
@@ -598,9 +598,9 @@ mod tests {
             let (to_self_sender, to_self_receiver) = make_pair::<RangeMapType>().await;
 
             let mut raw_shard: Shard<RangeMapType> =
-                Shard::new(0, vec![to_self_sender, to_other_sender]);
+                Shard::new(0, vec![to_self_sender, to_other_sender].into_iter().map(Rc::new).collect());
             let (rangemap, rangespec) = get_initial_range_map::<RangeMapType>(0, 0);
-            raw_shard.rangemap = Arc::new(rangemap.freeze());
+            raw_shard.state_mut().rangemap = Arc::new(rangemap.freeze());
             let rc_to_other_receiver = Rc::new(RefCell::new(to_other_receiver));
             from_other_sender
                 .send(Message::new(1, 0, Data::Log(String::from("hello"))))
@@ -610,13 +610,13 @@ mod tests {
             let recvd_messages = Rc::new(RefCell::new(vec![]));
             let cloned = Rc::clone(&recvd_messages);
             Local::local(async move {
-                while let Some(msg) = rc_to_other_receiver_cloned
-                    .clone()
+                while let Some(msg) = (&*rc_to_other_receiver_cloned
+                    .clone())
                     .borrow_mut()
                     .recv()
                     .await
                 {
-                    cloned.borrow_mut().push(msg);
+                    (&*cloned).borrow_mut().push(msg);
                 }
                 // rc_to_other_receiver_cloned.clone().borrow_mut().recv().await; // healthcheck
                 // rc_to_other_receiver_cloned.clone().borrow_mut().recv().await; // rangemap update
@@ -638,7 +638,7 @@ mod tests {
     fn test_shard_local() {
         LocalExecutorBuilder::new()
             .spawn(|| async move {
-                let test_data = TestData::new().await;
+                let mut test_data = TestData::new().await;
                 // check get set delete
                 Shard::set(&test_data.shard, key(), key()).await;
                 assert_eq!(Shard::get(&test_data.shard, key()).await, Some(key()));
@@ -664,7 +664,7 @@ mod tests {
                     .expect("ok");
 
                 glommio::timer::sleep(Duration::from_micros(300)).await;
-                assert_eq!(test_data.shard.borrow().stats.served_forwarded_gets, 1);
+                assert_eq!(test_data.shard.state.borrow().stats.served_forwarded_gets, 1);
                 assert_eq!(
                     *test_data.other_recvd_messages.borrow().last().unwrap(),
                     Message::new(

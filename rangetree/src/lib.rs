@@ -359,13 +359,13 @@ mod tests {
     #[test]
     fn test_freeze() {
         let mut rangemap = RangeVec::<Vec<u8>>::new();
-        let key = vec![1u8, 2, 3, 4, 5];
+        let key = vec![1u8; 8];
 
         assert!(rangemap.get(&key).is_none());
 
         let range = RangeSpec::trusted_new(
-            vec![0u8, 0, 0, 0, 0, 0, 0],
-            vec![255u8, 255, 255, 255, 255, 255, 255],
+            vec![0u8; 8],
+            vec![255u8; 8],
             (),
         );
         rangemap.insert(range.clone());
