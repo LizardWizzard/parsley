@@ -10,3 +10,5 @@ The key concept of parsley is to abstract storage implementations to be able to 
 For now implemented a basic shard concept. Each shard is running on a dedicated thread and owns certain number of data parts. Each data part can be tied to particular storage implementation. Currently also implemented forwarding of requests to shards that contain needed data.
 
 There is a working implementation of storage based on Storage Class Memory (Optane DIMM in particular). It is basic and will be further developed to improve characteristics.
+
+See design docs in `design/src`.
