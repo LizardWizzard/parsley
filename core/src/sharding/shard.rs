@@ -2,16 +2,24 @@ use futures::future::join_all;
 use glommio::channels::shared_channel::ConnectedReceiver;
 use rangetree::{RangeMap, RangeSpec, ReadonlyRangeMap};
 use std::{
-    cell::RefCell, collections::HashMap, env, rc::Rc, sync::Arc, task::Waker, time::Duration, vec,
+    borrow::BorrowMut,
+    cell::{RefCell, RefMut},
+    collections::HashMap,
+    env,
+    rc::Rc,
+    sync::Arc,
+    task::Waker,
+    time::Duration,
+    vec,
 };
 
 use glommio::{channels::shared_channel::ConnectedSender, prelude::*};
-use std::ops::Deref;
 
-use crate::{datum::{
-        BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage,
-        PMemDatumStorage,
-    }, sharding::bench::get_benchmark_range_map, storage::memory::MemoryStorage};
+use crate::{
+    datum::{BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage, PMemDatumStorage},
+    sharding::bench::get_benchmark_range_map,
+    storage::memory::MemoryStorage,
+};
 
 use super::{
     bench::Ctx,
@@ -91,7 +99,7 @@ pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
     let own = format!(
         "served_own_gets={:} served_own_sets={:} served_own_deletes={:}",
         stat.served_own_gets,
-        stat.served_own_sets - 91125,
+        stat.served_own_sets,
         stat.served_own_deletes
     );
     let served_forwarded = format!(
@@ -114,15 +122,14 @@ pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
     )
 }
 
-pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct ShardState<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
     pub id: usize,
     pub role: ShardRole,
     pub rangemap: Arc<RangeMapType::FROZEN>,
     pub datums: Vec<Datum>,
-    pub senders: Vec<ConnectedSender<Message<Data<RangeMapType>>>>,
+    pub senders: Vec<Rc<ConnectedSender<Message<Data<RangeMapType>>>>>,
     pub storages: Vec<DatumStorage>,
     // keep identifiers of forwarded requests
-    // potentially later hashmap with value of async write implementor or sink to send actual result top client
     pub forwarded_get: HashMap<usize, (Option<Waker>, Option<Option<Vec<u8>>>)>,
     pub forwarded_set: HashMap<usize, (Option<Waker>, Option<()>)>,
     pub forwarded_del: HashMap<usize, Option<Waker>>,
@@ -130,176 +137,11 @@ pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
     op_counter: usize,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<RangeMapType> {
-    pub fn new(id: usize, senders: Vec<ConnectedSender<Message<Data<RangeMapType>>>>) -> Self {
-        let role = {
-            if id == 0 {
-                ShardRole::Master
-            } else {
-                ShardRole::Worker
-            }
-        };
-        log::info!("shard id {:} role {:?}", id, role);
-        let datums = vec![];
-        let rangemap: Arc<RangeMapType::FROZEN> = Arc::new(RangeMapType::new().freeze());
-        Self {
-            id,
-            role,
-            rangemap,
-            datums,
-            senders,
-            storages: vec![
-                DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
-                DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
-                DatumStorage::LSMTreeModelStorage(Rc::new(
-                    RefCell::new(LSMTreeModelStorage::new()),
-                )),
-                DatumStorage::PMemStorage(Rc::new(RefCell::new(PMemDatumStorage::new(id)))),
-            ],
-            stats: Stats::default(),
-            forwarded_get: HashMap::new(),
-            forwarded_set: HashMap::new(),
-            forwarded_del: HashMap::new(),
-            op_counter: 0,
-        }
-    }
-
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> ShardState<RangeMapType> {
+    // this is implemented as a helper, when state is already borrowed and it is inconvenient to call Shard::next_op because it also mutably borrows state
     pub fn next_op(&mut self) -> usize {
         self.op_counter += 1;
         self.op_counter
-    }
-
-    async fn send_to(&self, idx: usize, msg: Data<RangeMapType>) {
-        self.senders[idx]
-            .send(Message::new(self.id, idx, msg))
-            .await
-            .expect(&format!("failed sendto. src {:?} dst {:?}", self.id, idx))
-    }
-
-    async fn healthcheck(
-        &self,
-        shard_receivers: &Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
-    ) -> Result<(), HealthcheckError> {
-        for (idx, sndr) in self
-            .senders
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx != self.id)
-        {
-            sndr.send(Message::new(self.id, idx, Data::Log(String::from("hello"))))
-                .await
-                .map_err(|_| {
-                    HealthcheckError::FailedToSend(format!(
-                        "Healthcheck failed to send from {:} to {:}",
-                        self.id, idx
-                    ))
-                })?
-        }
-        for (idx, sndr) in shard_receivers
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx != self.id)
-        {
-            let msg = sndr
-                .recv()
-                .await
-                .ok_or(HealthcheckError::FailedToRecv(format!(
-                    "Healthcheck failed to send from {:} to {:}",
-                    self.id, idx
-                )))?;
-            if msg.source_id != idx {
-                Err(HealthcheckError::IncorrectRecv(format!(
-                    "Healthcheck failed correctly recv. Expected source {:} got {:}",
-                    idx, msg.source_id
-                )))?
-            }
-            if msg.source_id != idx {
-                Err(HealthcheckError::IncorrectRecv(format!(
-                    "Healthcheck failed correctly recv. Expected dst {:} got {:}",
-                    self.id, msg.dst_id
-                )))?
-            }
-        }
-        Ok(())
-    }
-
-    async fn restore(&mut self) -> Result<RestoreStatus, RestoreError> {
-        // restore data for shards
-        // TODO
-        // if master restores rangemap
-        Ok(RestoreStatus::Empty)
-    }
-
-    pub async fn serve(
-        mut self,
-        shard_receivers: Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
-    ) -> Rc<RefCell<Shard<RangeMapType>>> {
-        self.healthcheck(&shard_receivers).await.unwrap();
-
-        match self.restore().await.unwrap() {
-            RestoreStatus::Data => {}
-            RestoreStatus::Empty => {
-                if self.role == ShardRole::Master {
-                    // default new datum params
-                    // let datum_id = self.datums.len();
-                    // // get default rangemap
-                    // let (rangemap, rangespec) =
-                    //     get_initial_range_map::<RangeMapType>(self.id, datum_id);
-
-                    // // create datum with default range
-                    // let datum = Datum::new(
-                    //     datum_id,
-                    //     RangeSpec::trusted_new(rangespec.start, rangespec.end, ()),
-                    //     self.storages[0].clone(),
-                    // );
-                    // self.datums.push(datum);
-                    let rangemap = get_benchmark_range_map::<RangeMapType>();
-
-                    // FIXME redundant clone
-                    for item in rangemap.clone().into_iter() {
-                        if item.data.shard_id == self.id {
-                            let storage = self.benchmark_get_datum_storage();
-                            self.datums.push(Datum::new(
-                                self.datums.len(),
-                                RangeSpec::trusted_new(item.start, item.end, ()),
-                                storage,
-                            ))
-                        }
-                    }
-
-                    // broadcast an update to others
-                    self.rangemap = Arc::new(rangemap.freeze());
-                    log::info!("broadcasting rangemap update");
-                    for (idx, dest) in self
-                        .senders
-                        .iter()
-                        .enumerate()
-                        .filter(|(idx, _)| *idx != self.id)
-                    {
-                        dest.send(Message::new(
-                            self.id,
-                            idx,
-                            Data::UpdateRangeMap(self.rangemap.clone()),
-                        ))
-                        .await
-                        .expect("send should'nt fail")
-                    }
-                }
-            }
-        }
-        // using rc refcell version of self. Tasks can mutably borrow self if mutable reference doesnt cross await boundary
-        // since shard is thread local this is assumed to be safe
-        let new_self = Rc::new(RefCell::new(self));
-        // spawn consumer from other shards
-        Local::local(Self::consume_from_other_shards(
-            new_self.clone(),
-            shard_receivers,
-        ))
-        .detach();
-        Local::later().await;
-        let mut bench = ShardBenchExt::new(new_self.clone());
-        bench.benchmark().await;
-        new_self
     }
 
     fn benchmark_get_datum_storage(&self) -> DatumStorage {
@@ -332,198 +174,381 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<Ra
         log::info!("shard {:} storage kind {:}", self.id, storage.get_kind());
         storage
     }
+}
+
+#[derive(Clone)]
+pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+    // using rc refcell tasks can mutably borrow state if reference doesnt cross await boundary
+    // since shard is thread local this is assumed to be safe
+    pub state: Rc<RefCell<ShardState<RangeMapType>>>,
+}
+
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<RangeMapType> {
+    pub fn new(id: usize, senders: Vec<Rc<ConnectedSender<Message<Data<RangeMapType>>>>>) -> Self {
+        let role = {
+            if id == 0 {
+                ShardRole::Master
+            } else {
+                ShardRole::Worker
+            }
+        };
+        log::info!("shard id {:} role {:?}", id, role);
+        let datums = vec![];
+        let rangemap: Arc<RangeMapType::FROZEN> = Arc::new(RangeMapType::new().freeze());
+        let state = ShardState {
+            id,
+            role,
+            rangemap,
+            datums,
+            senders,
+            storages: vec![
+                DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
+                DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
+                DatumStorage::LSMTreeModelStorage(Rc::new(
+                    RefCell::new(LSMTreeModelStorage::new()),
+                )),
+                DatumStorage::PMemStorage(Rc::new(RefCell::new(PMemDatumStorage::new(id)))),
+            ],
+            stats: Stats::default(),
+            forwarded_get: HashMap::new(),
+            forwarded_set: HashMap::new(),
+            forwarded_del: HashMap::new(),
+            op_counter: 0,
+        };
+        Self {
+            state: Rc::new(RefCell::new(state)),
+        }
+    }
+
+    pub fn state_mut(&self) -> RefMut<'_, ShardState<RangeMapType>> {
+        (&*self.state).borrow_mut()
+    }
+
+    pub fn next_op(&mut self) -> usize {
+        self.state_mut().next_op()
+    }
+
+    async fn send_to(&self, idx: usize, msg: Data<RangeMapType>) {
+        // TODO make error
+        // NOTE: this clone and rc made to exclude crossing await boundary by borrowed value,
+        //   so state can be used by other tasks when send is blocked on waiting for room in channel
+        let state = self.state.borrow();
+        let msg = Message::new(state.id, idx, msg);
+        let sender = state.senders[idx].clone();
+        let src = state.id;
+        drop(state);
+        sender
+            .send(msg)
+            .await
+            .expect(&format!("failed sendto. src {:?} dst {:?}", src, idx))
+    }
+
+    async fn healthcheck(
+        &self,
+        shard_receivers: &Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
+    ) -> Result<(), HealthcheckError> {
+        let state = self.state.borrow();
+        let self_id = state.id;
+        for (idx, sndr) in state
+            .senders
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != self_id)
+        {
+            sndr.send(Message::new(self_id, idx, Data::Log(String::from("hello"))))
+                .await
+                .map_err(|_| {
+                    HealthcheckError::FailedToSend(format!(
+                        "Healthcheck failed to send from {:} to {:}",
+                        self_id, idx
+                    ))
+                })?
+        }
+        for (idx, sndr) in shard_receivers
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != self_id)
+        {
+            let msg = sndr
+                .recv()
+                .await
+                .ok_or(HealthcheckError::FailedToRecv(format!(
+                    "Healthcheck failed to send from {:} to {:}",
+                    self_id, idx
+                )))?;
+            if msg.source_id != idx {
+                Err(HealthcheckError::IncorrectRecv(format!(
+                    "Healthcheck failed correctly recv. Expected source {:} got {:}",
+                    idx, msg.source_id
+                )))?
+            }
+            if msg.source_id != idx {
+                Err(HealthcheckError::IncorrectRecv(format!(
+                    "Healthcheck failed correctly recv. Expected dst {:} got {:}",
+                    self_id, msg.dst_id
+                )))?
+            }
+        }
+        Ok(())
+    }
+
+    async fn restore(&mut self) -> Result<RestoreStatus, RestoreError> {
+        // restore data for shards
+        // TODO
+        // if master restores rangemap
+        Ok(RestoreStatus::Empty)
+    }
+
+    pub async fn serve(
+        mut self,
+        shard_receivers: Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
+    ) -> Shard<RangeMapType> {
+        self.healthcheck(&shard_receivers).await.unwrap();
+
+        match self.restore().await.unwrap() {
+            RestoreStatus::Data => {}
+            RestoreStatus::Empty => {
+                let mut state = self.state_mut();
+                if state.role == ShardRole::Master {
+                    // default new datum params
+                    // let datum_id = self.datums.len();
+                    // // get default rangemap
+                    // let (rangemap, rangespec) =
+                    //     get_initial_range_map::<RangeMapType>(self.id, datum_id);
+
+                    // // create datum with default range
+                    // let datum = Datum::new(
+                    //     datum_id,
+                    //     RangeSpec::trusted_new(rangespec.start, rangespec.end, ()),
+                    //     self.storages[0].clone(),
+                    // );
+                    // self.datums.push(datum);
+                    let rangemap = get_benchmark_range_map::<RangeMapType>();
+
+                    // FIXME redundant clone
+                    for item in rangemap.clone().into_iter() {
+                        if item.data.shard_id == state.id {
+                            let storage = state.benchmark_get_datum_storage();
+                            let id = state.datums.len();
+                            state.datums.push(Datum::new(
+                                id,
+                                RangeSpec::trusted_new(item.start, item.end, ()),
+                                storage,
+                            ))
+                        }
+                    }
+
+                    // broadcast an update to others
+                    state.rangemap = Arc::new(rangemap.freeze());
+                    log::info!("broadcasting rangemap update");
+                    for (idx, dest) in state
+                        .senders
+                        .iter()
+                        .enumerate()
+                        .filter(|(idx, _)| *idx != state.id)
+                    {
+                        dest.send(Message::new(
+                            state.id,
+                            idx,
+                            Data::UpdateRangeMap(state.rangemap.clone()),
+                        ))
+                        .await
+                        .expect("send should'nt fail")
+                    }
+                }
+            }
+        }
+        // spawn consumer from other shards
+        Local::local(Self::consume_from_other_shards(
+            self.clone(),
+            shard_receivers,
+        ))
+        .detach();
+        Local::later().await;
+        let mut bench = ShardBenchExt::new(self.clone());
+        bench.benchmark().await;
+        self
+    }
 
     async fn consume_from_other_shards(
-        instance: Rc<RefCell<Self>>,
+        self,
         shard_receivers: Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
     ) {
+        let self_id = self.state.borrow().id;
         let mut join_handles = vec![];
         for (idx, recv) in shard_receivers
             .into_iter()
             .enumerate()
-            .filter(|(idx, _)| *idx != instance.borrow().id)
+            .filter(|(idx, _)| *idx != self_id)
         {
-            let instance = instance.clone();
-            let join_handle =
-                Local::local(async move {
-                    loop {
-                        if let Some(msg) = recv.recv().await {
-                            if msg.dst_id != instance.borrow().id {
-                                log::error!(
-                                    "invalid dst id! Expected: {:} got {:}",
-                                    instance.borrow().id,
-                                    &msg.dst_id
-                                );
-                                continue;
-                            }
-                            match msg.data {
-                                Data::Log(s) => log::info!("received log: {:}", s),
-                                Data::UpdateRangeMap(rangemap) => {
-                                    let mut borrowed = instance.borrow_mut();
-                                    // FIXME redundant clone
-                                    // FIXME hacky datum creation for benchmark, introduce special message type for that
-                                    // and during update check that all datums from rangemap belonging to current shard actually exist
-                                    let storage = borrowed.benchmark_get_datum_storage();
-                                    for item in rangemap.deref().clone().into_iter() {
-                                        if item.data.shard_id == borrowed.id {
-                                            let len = borrowed.datums.len();
-                                            borrowed.datums.push(Datum::new(
-                                                len,
-                                                RangeSpec::trusted_new(item.start, item.end, ()),
-                                                storage.clone(),
-                                            ))
-                                        }
-                                    }
-                                    borrowed.rangemap = rangemap;
-                                    log::info!("rangemap updated ok");
-                                }
-                                Data::GetRequest { id, key } => {
-                                    let instance = instance.clone();
-                                    let source = msg.source_id;
-
-                                    Local::local(async move {
-                                        let value = Shard::get(&instance, key).await;
-                                        instance
-                                            .borrow()
-                                            .send_to(source, Data::GetResponse { id, value })
-                                            .await;
-                                        instance.borrow_mut().stats.served_forwarded_gets += 1;
-                                    })
-                                    .detach();
-                                }
-                                Data::GetResponse { id, value } => {
-                                    instance.borrow_mut().forwarded_get.entry(id).and_modify(
-                                        |(waker, result)| {
-                                            // set result
-                                            *result = Some(value);
-                                            // wake the waker
-                                            waker.take().expect("no waker in forwarded get").wake()
-                                        },
-                                    );
-                                }
-                                Data::SetRequest { id, key, value } => {
-                                    let instance = instance.clone();
-                                    let source = msg.source_id;
-                                    Local::local(async move {
-                                        Shard::set(&instance, key, value).await;
-                                        instance
-                                            .borrow()
-                                            .send_to(source, Data::SetResponse { id })
-                                            .await;
-                                        instance.borrow_mut().stats.served_forwarded_sets += 1;
-                                    })
-                                    .detach();
-                                }
-                                Data::SetResponse { id } => {
-                                    instance.borrow_mut().forwarded_set.entry(id).and_modify(
-                                        |(waker, result)| {
-                                            *result = Some(());
-                                            // wake the waker
-                                            waker.take().expect("no waker in forwarded set").wake()
-                                        },
-                                    );
-                                }
-                                Data::DelRequest { id, key } => {
-                                    let instance = instance.clone();
-                                    let source = msg.source_id;
-                                    Local::local(async move {
-                                        instance.borrow_mut().delete(&key).await;
-                                        instance
-                                            .borrow()
-                                            .send_to(source, Data::DelResponse { id })
-                                            .await;
-                                        instance.borrow_mut().stats.served_forwarded_sets += 1;
-                                    })
-                                    .detach();
-                                }
-                                Data::DelResponse { id } => {
-                                    instance.borrow_mut().forwarded_del.entry(id).and_modify(
-                                        |waker| {
-                                            // wake the waker
-                                            waker.take().expect("no waker in forwarded get").wake()
-                                        },
-                                    );
-                                }
-                            }
-                        } else {
-                            log::info!("shard {:} recvd None from {:}", instance.borrow().id, idx);
-                            break;
+            let instance = self.clone();
+            let join_handle = Local::local(async move {
+                loop {
+                    if let Some(msg) = recv.recv().await {
+                        if msg.dst_id != self_id {
+                            log::error!(
+                                "invalid dst id! Expected: {:} got {:}",
+                                self_id,
+                                &msg.dst_id
+                            );
+                            continue;
                         }
+                        match msg.data {
+                            Data::Log(s) => log::info!("received log: {:}", s),
+                            Data::UpdateRangeMap(rangemap) => {
+                                // FIXME redundant clone
+                                // FIXME hacky datum creation for benchmark, introduce special message type for that
+                                // and during update check that all datums from rangemap belonging to current shard actually exist
+                                let storage = instance.state.borrow().benchmark_get_datum_storage();
+                                let mut borrowed = instance.state_mut();
+                                for item in (&*rangemap).clone().into_iter() {
+                                    if item.data.shard_id == self_id {
+                                        let len = borrowed.datums.len();
+                                        borrowed.datums.push(Datum::new(
+                                            len,
+                                            RangeSpec::trusted_new(item.start, item.end, ()),
+                                            storage.clone(),
+                                        ))
+                                    }
+                                }
+                                borrowed.rangemap = rangemap;
+                                log::info!("rangemap updated ok");
+                            }
+                            Data::GetRequest { id, key } => {
+                                let instance = instance.clone();
+                                let source = msg.source_id;
+
+                                Local::local(async move {
+                                    let value = instance.get(key).await; //Shard::get(&instance, key).await;
+                                    instance
+                                        .send_to(source, Data::GetResponse { id, value })
+                                        .await;
+                                    instance.state_mut().stats.served_forwarded_gets += 1;
+                                })
+                                .detach();
+                            }
+                            Data::GetResponse { id, value } => {
+                                instance.state_mut().forwarded_get.entry(id).and_modify(
+                                    |(waker, result)| {
+                                        // set result
+                                        *result = Some(value);
+                                        // wake the waker
+                                        waker.take().expect("no waker in forwarded get").wake()
+                                    },
+                                );
+                            }
+                            Data::SetRequest { id, key, value } => {
+                                let instance = instance.clone();
+                                let source = msg.source_id;
+                                Local::local(async move {
+                                    instance.set(key, value).await;
+                                    instance.send_to(source, Data::SetResponse { id }).await;
+                                    instance.state_mut().stats.served_forwarded_sets += 1;
+                                })
+                                .detach();
+                            }
+                            Data::SetResponse { id } => {
+                                instance.state_mut().forwarded_set.entry(id).and_modify(
+                                    |(waker, result)| {
+                                        *result = Some(());
+                                        // wake the waker
+                                        waker.take().expect("no waker in forwarded set").wake()
+                                    },
+                                );
+                            }
+                            Data::DelRequest { id, key } => {
+                                let mut instance = instance.clone();
+                                let source = msg.source_id;
+                                Local::local(async move {
+                                    instance.borrow_mut().delete(&key).await;
+                                    instance.send_to(source, Data::DelResponse { id }).await;
+                                    instance.state_mut().stats.served_forwarded_sets += 1;
+                                })
+                                .detach();
+                            }
+                            Data::DelResponse { id } => {
+                                instance
+                                    .state_mut()
+                                    .forwarded_del
+                                    .entry(id)
+                                    .and_modify(|waker| {
+                                        // wake the waker
+                                        waker.take().expect("no waker in forwarded get").wake()
+                                    });
+                            }
+                        }
+                    } else {
+                        log::info!("shard {:} recvd None from {:}", self_id, idx);
+                        break;
                     }
-                })
-                .detach();
+                }
+            })
+            .detach();
             join_handles.push(join_handle);
         }
         join_all(join_handles).await;
     }
 
-    pub async fn get(instance: &Rc<RefCell<Self>>, key: Vec<u8>) -> Option<Vec<u8>> {
-        let mut borrowed = instance.borrow_mut();
-        let rangespec = borrowed
+    pub async fn get(&self, key: Vec<u8>) -> Option<Vec<u8>> {
+        let mut state = self.state_mut();
+        let rangespec = state
             .rangemap
             .get(&key)
             .expect("always should be some range");
         let shard_id = rangespec.data.shard_id;
         let datum_id = rangespec.data.datum_id;
-        if shard_id != borrowed.id {
-            borrowed.stats.forwarded_gets += 1;
-            let id = borrowed.next_op();
-            let fut = ForwardedGet::new(id, instance.clone());
-            drop(borrowed);
-            instance
-                .borrow()
-                .send_to(shard_id, Data::GetRequest { id: id, key: key })
+        if shard_id != state.id {
+            state.stats.forwarded_gets += 1;
+            let id = state.next_op();
+            let fut = ForwardedGet::new(id, self.clone());
+            drop(state);
+            self.send_to(shard_id, Data::GetRequest { id: id, key: key })
                 .await;
             return fut.await;
         }
-        borrowed.stats.served_own_gets += 1;
-        drop(borrowed);
+        state.stats.served_own_gets += 1;
+        drop(state);
 
-        if let Some(data) = instance.borrow().datums[datum_id].get(&key).await {
+        // FIXME borrow crosses await boundary, probably solve by keeping datums in rc
+        if let Some(data) = self.state.borrow().datums[datum_id].get(&key).await {
             return Some(data);
         }
         return None;
     }
 
     // async fn set(&mut self, key: &[u8], value: &[u8]) {
-    pub async fn set(instance: &Rc<RefCell<Self>>, key: Vec<u8>, value: Vec<u8>) {
-        let mut borrowed = instance.borrow_mut();
-        let rangespec = borrowed.rangemap.get(&key).unwrap();
+    pub async fn set(&self, key: Vec<u8>, value: Vec<u8>) {
+        let mut state = self.state_mut();
+        let rangespec = state.rangemap.get(&key).unwrap();
         let shard_id = rangespec.data.shard_id;
         let datum_id = rangespec.data.datum_id;
 
-        if shard_id != borrowed.id {
-            borrowed.stats.forwarded_sets += 1;
-            let id = borrowed.next_op();
-            let fut = ForwardedSet::new(id, instance.clone());
-            drop(borrowed);
-            instance
-                .borrow()
-                .send_to(shard_id, Data::SetRequest { id, key, value })
+        if shard_id != state.id {
+            state.stats.forwarded_sets += 1;
+            let id = state.next_op();
+            let fut = ForwardedSet::new(id, self.clone());
+            drop(state);
+            self.send_to(shard_id, Data::SetRequest { id, key, value })
                 .await;
             return fut.await;
         }
-        borrowed.stats.served_own_sets += 1;
-        drop(borrowed);
-        instance.borrow_mut().datums[datum_id].set(&key, &value).await;
+        state.stats.served_own_sets += 1;
+        drop(state);
+        // FIXME borrow crosses await boundary, probably solve by keeping datums in rc
+        self.state.borrow().datums[datum_id].set(&key, &value).await;
     }
 
     pub async fn delete(&mut self, key: &[u8]) -> Option<()> {
-        let rangespec = self.rangemap.get(key).expect("always should be some range");
-        if rangespec.data.shard_id != self.id {
-            // FIXME now always return none, should await for response, may be use facade with operation on shard, spawning new operation and waiting for it resolve
-            self.stats.forwarded_sets += 1;
-            self.send_to(
-                rangespec.data.shard_id,
-                Data::DelRequest {
-                    id: 1,
-                    key: key.to_owned(),
-                },
-            )
-            .await;
-            return None;
+        let state = self.state_mut();
+        let rangespec = state
+            .rangemap
+            .get(key)
+            .expect("always should be some range");
+        if rangespec.data.shard_id != state.id {
+            todo!()
         }
-        self.datums[rangespec.data.datum_id].delete(key).await
+        // FIXME borrow crosses await boundary, probably solve by keeping datums in rc
+        state.datums[rangespec.data.datum_id].delete(key).await
     }
 }
 
@@ -616,27 +641,17 @@ mod tests {
                 let test_data = TestData::new().await;
                 // check get set delete
                 Shard::set(&test_data.shard, key(), key()).await;
-                assert_eq!(
-                    Shard::get(&test_data.shard, key()).await,
-                    Some(key())
-                );
-                assert_eq!(
-                    test_data.shard.borrow_mut().delete(&key()).await,
-                    Some(())
-                );
+                assert_eq!(Shard::get(&test_data.shard, key()).await, Some(key()));
+                assert_eq!(test_data.shard.borrow_mut().delete(&key()).await, Some(()));
                 // check concurrent get
-                join!(
-                    async { Shard::get(&test_data.shard, key()).await },
-                    async { Shard::get(&test_data.shard, key()).await }
-                );
+                join!(async { Shard::get(&test_data.shard, key()).await }, async {
+                    Shard::get(&test_data.shard, key()).await
+                });
                 // check set with more concurrency
                 join_all((0u8..100).into_iter().map(|_| {
                     let cloned = test_data.shard.clone();
                     async move {
-                        assert_eq!(
-                            Shard::set(&cloned, key(), key()).await,
-                            (),
-                        );
+                        assert_eq!(Shard::set(&cloned, key(), key()).await, (),);
                     }
                 }))
                 .await;
@@ -644,14 +659,7 @@ mod tests {
                 // check resolving of forwarded requests, send operations like they are forwarded from other
                 test_data
                     .from_other_sender
-                    .send(Message::new(
-                        1,
-                        0,
-                        Data::GetRequest {
-                            id: 1,
-                            key: key(),
-                        },
-                    ))
+                    .send(Message::new(1, 0, Data::GetRequest { id: 1, key: key() }))
                     .await
                     .expect("ok");
 

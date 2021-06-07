@@ -1,4 +1,4 @@
-use std::{cell::RefCell, convert::TryInto, env, ops::Range, rc::Rc, time::{Duration, Instant}};
+use std::{convert::TryInto, env, ops::Range, time::{Duration, Instant}};
 
 use glommio::{Local, timer};
 use histogram::Histogram;
@@ -146,7 +146,7 @@ pub struct Ctx<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
     pub value_length: usize,
     pub rng: ThreadRng,
     pub datum: Datum,
-    pub instance: Rc<RefCell<Shard<RangeMapType>>>,
+    pub instance: Shard<RangeMapType>,
     pub histogram: Histogram,
     pub workload: Workload,
 }
@@ -159,7 +159,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Ctx<RangeMapType> 
         value_length: usize,
         rng: ThreadRng,
         datum: Datum,
-        instance: Rc<RefCell<Shard<RangeMapType>>>,
+        instance: Shard<RangeMapType>,
         histogram: Histogram,
         workload: Workload,
     ) -> Self {
@@ -178,12 +178,12 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Ctx<RangeMapType> 
 }
 
 pub struct ShardBenchExt<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
-    pub shard: Rc<RefCell<Shard<RangeMapType>>>,
+    pub shard: Shard<RangeMapType>,
 }
 impl<RangeMapType> ShardBenchExt<RangeMapType> where
-    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq
+    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static
 {
-    pub fn new(shard: Rc<RefCell<Shard<RangeMapType>>>) -> Self { Self { shard } }
+    pub fn new(shard: Shard<RangeMapType>) -> Self { Self { shard } }
 
     pub async fn benchmark_load_data(
         &mut self,
@@ -201,7 +201,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                     key[0] = first;
                     key[1] = second;
                     key[2] = third;
-                    Shard::set(&self.shard, key, vec![0; value_length]).await;
+                    self.shard.set(key, vec![0; value_length]).await;
                     ctr += 1;
                 }
             }
@@ -232,7 +232,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             key[1] = second;
             key[2] = third;
             let t0 = Instant::now();
-            Shard::get(&self.shard, key).await;
+            self.shard.get(key).await;
             ctx.histogram
                 .increment(t0.elapsed().as_micros().try_into().unwrap())
                 .unwrap();
@@ -251,7 +251,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             key[1] = second;
             key[2] = third;
             let t0 = Instant::now();
-            Shard::set(&ctx.instance, key, vec![0; ctx.value_length]).await;
+            self.shard.set(key, vec![0; ctx.value_length]).await;
             ctx.histogram
                 .increment(t0.elapsed().as_micros().try_into().unwrap())
                 .unwrap();
@@ -288,7 +288,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             //     Shard::get(&ctx.instance, key).await;
             //     semaphore.signal(1);
             // }).detach();
-            Shard::get(&self.shard, key).await;
+            self.shard.get(key).await;
             ctx.histogram
                 .increment(t0.elapsed().as_micros().try_into().unwrap())
                 .unwrap();
@@ -317,7 +317,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             key[1] = second;
             key[2] = third;
             let t0 = Instant::now();
-            Shard::set(&ctx.instance, key, vec![0; ctx.value_length]).await;
+            self.shard.set(key, vec![0; ctx.value_length]).await;
             ctx.histogram
                 .increment(t0.elapsed().as_micros().try_into().unwrap())
                 .unwrap();
@@ -350,9 +350,9 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             key[2] = third;
             let t0 = Instant::now();
             if read_write_value < write_percentage {
-                Shard::set(&ctx.instance, key, vec![0; ctx.value_length]).await;
+                self.shard.set(key, vec![0; ctx.value_length]).await;
             } else {
-                Shard::get(&ctx.instance, key).await;
+                self.shard.get(key).await;
             }
             ctx.histogram
                 .increment(t0.elapsed().as_micros().try_into().unwrap())
@@ -366,7 +366,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
         }
         // wait for update of rangemap
         loop {
-            if self.shard.borrow().datums.len() == 0 {
+            if self.shard.state.borrow().datums.len() == 0 {
                 Local::later().await;
             } else {
                 break;
@@ -374,11 +374,11 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
         }
     
         // fill data
-        let mut datums = self.shard.borrow().datums.clone();
+        let mut datums = self.shard.state.borrow().datums.clone();
         let rng = rand::thread_rng();
         let key_length = 16;
         let value_length = 256;
-        let shard_id = self.shard.borrow().id;
+        let shard_id = self.shard.state.borrow().id;
         assert_eq!(datums.len(), 1);
         let datum = datums.pop().expect("checked");
     
@@ -415,10 +415,9 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             Workload::StorageWorkloadC => self.benchmark_read_write_local_remote(&mut ctx).await,
             Workload::PMemStorageWorkload => self.benchmark_read_write_local_remote(&mut ctx).await,
         }
-    
         println!(
             "{:}",
-            format_stats(&self.shard.borrow().stats, shard_id, t0.elapsed(), ctx),
+            format_stats(&self.shard.state.borrow().stats, shard_id, t0.elapsed(), ctx),
         );
         timer::sleep(Duration::from_secs(2)).await;
     }

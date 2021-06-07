@@ -108,7 +108,7 @@ impl Storage for MemoryStorage {
     type DelFuture<'key> = MemoryStorageDelFuture<'key>;
 
     fn get<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::GetFuture<'key> {
-        MemoryStorageGetFuture::new(&instance, key)
+        MemoryStorageGetFuture::new(instance, key)
     }
 
     fn set<'key, 'value>(
@@ -120,7 +120,7 @@ impl Storage for MemoryStorage {
     }
 
     fn delete<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::DelFuture<'key> {
-        MemoryStorageDelFuture::new(&instance, key)
+        MemoryStorageDelFuture::new(instance, key)
     }
 }
 

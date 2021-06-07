@@ -1,17 +1,55 @@
-use std::{cell::RefCell, rc::Rc, task::Poll};
+use std::task::Poll;
 
 use futures::Future;
 use rangetree::RangeMap;
 
 use super::shard::{Shard, ShardDatum};
 
-pub struct ForwardedSet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct ForwardedGet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
     id: usize,
-    shard: Rc<RefCell<Shard<RangeMapType>>>,
+    shard: Shard<RangeMapType>,
+}
+
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> ForwardedGet<RangeMapType> {
+    pub fn new(id: usize, shard: Shard<RangeMapType>) -> Self {
+        Self { id, shard }
+    }
+}
+
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> Future
+    for ForwardedGet<RangeMapType>
+{
+    type Output = Option<Vec<u8>>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        // of there is no value -> insert waker with None result
+        // else if there is value but no result, update waker
+        // if result exists ready
+        let mut shard = self.shard.state_mut();
+        let (waker, result) = shard
+            .forwarded_get
+            .entry(self.id)
+            .or_insert((Some(cx.waker().clone()), None));
+        match result.take() {
+            None => {
+                *waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            Some(response) => {
+                shard.forwarded_get.remove(&self.id);
+                Poll::Ready(response)
+            }
+        }
+    }
+}
+
+pub struct ForwardedSet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
+    id: usize,
+    shard: Shard<RangeMapType>,
 }
 
 impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> ForwardedSet<RangeMapType> {
-    pub fn new(id: usize, shard: Rc<RefCell<Shard<RangeMapType>>>) -> Self {
+    pub fn new(id: usize, shard: Shard<RangeMapType>) -> Self {
         Self { id, shard }
     }
 }
@@ -25,7 +63,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
         // if there is no value -> insert waker with None result
         // else if there is value but no result, update waker
         // if result exists ready
-        let mut shard = self.shard.borrow_mut();
+        let mut shard = self.shard.state_mut();
         let (waker, result) = shard
             .forwarded_set
             .entry(self.id)
@@ -37,44 +75,6 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
             }
             Some(response) => {
                 shard.forwarded_set.remove(&self.id);
-                Poll::Ready(response)
-            }
-        }
-    }
-}
-
-pub struct ForwardedGet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
-    id: usize,
-    shard: Rc<RefCell<Shard<RangeMapType>>>,
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> ForwardedGet<RangeMapType> {
-    pub fn new(id: usize, shard: Rc<RefCell<Shard<RangeMapType>>>) -> Self {
-        Self { id, shard }
-    }
-}
-
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
-    for ForwardedGet<RangeMapType>
-{
-    type Output = Option<Vec<u8>>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        // of there is no value -> insert waker with None result
-        // else if there is value but no result, update waker
-        // if result exists ready
-        let mut shard = self.shard.borrow_mut();
-        let (waker, result) = shard
-            .forwarded_get
-            .entry(self.id)
-            .or_insert((Some(cx.waker().clone()), None));
-        match result.take() {
-            None => {
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Some(response) => {
-                shard.forwarded_get.remove(&self.id);
                 Poll::Ready(response)
             }
         }

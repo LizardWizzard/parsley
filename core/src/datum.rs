@@ -188,7 +188,7 @@ impl Datum {
         }
     }
 
-    pub async fn set(&mut self, key: &[u8], value: &[u8]) {
+    pub async fn set(&self, key: &[u8], value: &[u8]) {
         match &self.storage {
             DatumStorage::MemoryStorage(storage) => MemoryStorage::set(storage, key, value).await,
             // FIXME temporary copying for model implementations
@@ -204,7 +204,7 @@ impl Datum {
         }
     }
 
-    pub async fn delete(&mut self, key: &[u8]) -> Option<()> {
+    pub async fn delete(&self, key: &[u8]) -> Option<()> {
         match &self.storage {
             DatumStorage::MemoryStorage(storage) => MemoryStorage::delete(storage, key).await,
             DatumStorage::BTreeModelStorage(storage) => {

@@ -31,7 +31,7 @@ class Stats:
     def throughput(self) -> float:
         total = 0
         total += self.served_own_gets
-        total += self.served_own_sets #- NUMBER_OF_KEYS
+        total += self.served_own_sets - NUMBER_OF_KEYS  # exclude initial data loading
         total += self.served_own_deletes
         total += self.served_forwarded_gets
         total += self.served_forwarded_sets
@@ -66,6 +66,7 @@ def get_env(
         "REMOTE_PERCENTAGE": str(remote_percentage),
         "WRITE_PERCENTAGE": str(write_percentage or 0),
         "WORKLOAD": workload,
+        "BENCHMARK": "1",
     }
 
 
@@ -79,8 +80,10 @@ def run(env: Dict) -> List[Stats]:
     cmd = "cargo run --package parsley --bin parsley --release"
     # cmd = "cargo flamegraph --bin parsley -o my_flamegraph.svg"
     # cmd = "sudo /home/dmitry/.cargo/bin/flamegraph -o my_flamegraph.svg target/release/parsley"
-    print('cmd!!', cmd)
-    import pprint; pprint.pprint(env)
+    print("cmd!!", cmd)
+    import pprint
+
+    pprint.pprint(env)
     result = check_output(cmd.split(), env=extend_env(env), text=True)
     for line in result.splitlines():
         print(line)
@@ -127,12 +130,6 @@ def run_workload(workload: Workload) -> List[Stats]:
     return stats
 
 
-# def run_workload(stat_writer, workload: Workload):
-#     stats = run_from_workload(workload)
-
-#     return stats
-
-
 def run_workloads(log_file: pathlib.Path, workloads: List[Workload]):
     stats = []
     with log_file.open("w") as f:
@@ -150,14 +147,14 @@ def run_workloads(log_file: pathlib.Path, workloads: List[Workload]):
         for workload in workloads:
             workload_stats = run_workload(workload)
             stats.append(workload_stats)
-            # import ipdb; ipdb.set_trace()
             writer.writerow(
                 {
                     "shard": "",
                     "remote_percentage": workload.remote_percentage,
                     "write_percentage": workload.write_percentage,
                     "total_throughput": total_throughput(workload_stats),
-                    "mean": sum(stat.mean for stat in workload_stats) / len(workload_stats),
+                    "mean": sum(stat.mean for stat in workload_stats)
+                    / len(workload_stats),
                 }
             )
         return stats
@@ -186,7 +183,10 @@ def bench_2(log_file: pathlib.Path):
         )
     run_workloads(log_file, workloads)
 
-def run_workload_stats_per_shard(log_file: pathlib.Path, workload: Workload) -> List[Stats]:  
+
+def run_workload_stats_per_shard(
+    log_file: pathlib.Path, workload: Workload
+) -> List[Stats]:
     stats = run_workload(workload)
     with log_file.open("w") as f:
         writer = csv.DictWriter(
@@ -214,25 +214,33 @@ def run_workload_stats_per_shard(log_file: pathlib.Path, workload: Workload) -> 
 
 
 def bench_3(log_file: pathlib.Path):
-    workload = Workload(name="StorageWorkloadA", remote_percentage=0, write_percentage=30)
+    workload = Workload(
+        name="StorageWorkloadA", remote_percentage=0, write_percentage=30
+    )
     run_workload_stats_per_shard(log_file=log_file, workload=workload)
 
 
 def bench_4(log_file: pathlib.Path):
-    workload = Workload(name="StorageWorkloadB", remote_percentage=0, write_percentage=70)
+    workload = Workload(
+        name="StorageWorkloadB", remote_percentage=0, write_percentage=70
+    )
     run_workload_stats_per_shard(log_file=log_file, workload=workload)
 
 
 def bench_5(log_file: pathlib.Path):
     # 30% for shards 0 and 1
-    workload = Workload(name="StorageWorkloadC", remote_percentage=0, write_percentage=30)
+    workload = Workload(
+        name="StorageWorkloadC", remote_percentage=0, write_percentage=30
+    )
     run_workload_stats_per_shard(log_file=log_file, workload=workload)
-    # run_workloads(log_file, workloads)
+
 
 def bench_6(log_file: pathlib.Path):
-    workload = Workload(name="PMemStorageWorkload", remote_percentage=0, write_percentage=30)
+    workload = Workload(
+        name="PMemStorageWorkload", remote_percentage=0, write_percentage=30
+    )
     run_workload_stats_per_shard(log_file=log_file, workload=workload)
-    # run_workloads(log_file, workloads)
+
 
 def bench_7(log_file: pathlib.Path):
     # the same as bench 6 but without persist
@@ -243,12 +251,7 @@ def bench_7(log_file: pathlib.Path):
 def main():
     log_dir = pathlib.Path(__file__).parent / "bench_logs"
     benches = [bench_1, bench_2, bench_3, bench_4, bench_5, bench_6, bench_7]
-    # benches = [bench_3]
-    # benches = [bench_3, bench_4, bench_5]
-    # benches = [bench_5]
     for i, bench in enumerate(benches):
-        if i < 6:
-            continue
         log = log_dir / f"bench_{i+1}.log"
         bench(log)
 

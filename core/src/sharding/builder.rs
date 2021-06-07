@@ -2,6 +2,7 @@ use futures::{future::join_all, join};
 use glommio::channels::shared_channel::SharedReceiver;
 use glommio::LocalExecutorBuilder;
 use rangetree::RangeMap;
+use std::rc::Rc;
 use std::{marker::PhantomData, thread::JoinHandle, vec};
 
 use glommio::{
@@ -122,7 +123,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> ShardBui
                         // let storage = Rc::new(RefCell::new(DatumStorage::MemoryStorage(MemoryStorage::new())));
                         let shard = Shard::<RangeMapType>::new(
                             id,
-                            connected_senders.into_iter().map(Option::unwrap).collect(),
+                            connected_senders.into_iter().map(Option::unwrap).map(Rc::new).collect(),
                         );
 
                         shard
