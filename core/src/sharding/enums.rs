@@ -6,13 +6,13 @@ use super::shard::ShardDatum;
 
 
 #[derive(Debug, PartialEq)]
-pub struct Message<T: Send + PartialEq> {
+pub struct Message<T: Send> {
     pub source_id: usize,
     pub dst_id: usize,
     pub data: T,
 }
 
-impl<T: Send + PartialEq> Message<T> {
+impl<T: Send> Message<T> {
     pub fn new(source_id: usize, dst_id: usize, data: T) -> Self {
         Self {
             source_id,
@@ -22,7 +22,7 @@ impl<T: Send + PartialEq> Message<T> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Data<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     Log(String),
     UpdateRangeMap(Arc<RangeMapType::FROZEN>),

@@ -5,7 +5,7 @@ use core::{
     }
 };
 use log::LevelFilter;
-use rangetree::RangeVec;
+use rangetree::rangevec::RangeVec;
 use std::io::Result;
 
 fn main() -> Result<()> {

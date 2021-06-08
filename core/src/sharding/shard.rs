@@ -90,7 +90,7 @@ pub struct Stats {
 }
 
 // FIXME kind of custom inefficient Display :)
-pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
+pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum>>(
     stat: &Stats,
     shard_id: usize,
     elapsed: Duration,
@@ -98,9 +98,7 @@ pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
 ) -> String {
     let own = format!(
         "served_own_gets={:} served_own_sets={:} served_own_deletes={:}",
-        stat.served_own_gets,
-        stat.served_own_sets,
-        stat.served_own_deletes
+        stat.served_own_gets, stat.served_own_sets, stat.served_own_deletes
     );
     let served_forwarded = format!(
         "served_forwarded_gets={:} served_forwarded_sets={:} served_forwarded_deletes={:}",
@@ -122,7 +120,7 @@ pub fn format_stats<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq>(
     )
 }
 
-pub struct ShardState<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct ShardState<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     pub id: usize,
     pub role: ShardRole,
     pub rangemap: Arc<RangeMapType::FROZEN>,
@@ -137,7 +135,7 @@ pub struct ShardState<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
     op_counter: usize,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> ShardState<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardState<RangeMapType> {
     // this is implemented as a helper, when state is already borrowed and it is inconvenient to call Shard::next_op because it also mutably borrows state
     pub fn next_op(&mut self) -> usize {
         self.op_counter += 1;
@@ -177,13 +175,13 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> ShardSta
 }
 
 #[derive(Clone)]
-pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     // using rc refcell tasks can mutably borrow state if reference doesnt cross await boundary
     // since shard is thread local this is assumed to be safe
     pub state: Rc<RefCell<ShardState<RangeMapType>>>,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> Shard<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> {
     pub fn new(id: usize, senders: Vec<Rc<ConnectedSender<Message<Data<RangeMapType>>>>>) -> Self {
         let role = {
             if id == 0 {
@@ -563,7 +561,7 @@ mod tests {
     use super::*;
     use futures::join;
     use glommio::channels::shared_channel;
-    use rangetree::RangeVec;
+    use rangetree::rangevec::RangeVec;
     use std::time::Duration;
 
     type RangeMapType = RangeVec<Vec<u8>, ShardDatum>;
@@ -597,8 +595,13 @@ mod tests {
             let (from_self_sender, from_self_receiver) = make_pair::<RangeMapType>().await;
             let (to_self_sender, to_self_receiver) = make_pair::<RangeMapType>().await;
 
-            let mut raw_shard: Shard<RangeMapType> =
-                Shard::new(0, vec![to_self_sender, to_other_sender].into_iter().map(Rc::new).collect());
+            let mut raw_shard: Shard<RangeMapType> = Shard::new(
+                0,
+                vec![to_self_sender, to_other_sender]
+                    .into_iter()
+                    .map(Rc::new)
+                    .collect(),
+            );
             let (rangemap, rangespec) = get_initial_range_map::<RangeMapType>(0, 0);
             raw_shard.state_mut().rangemap = Arc::new(rangemap.freeze());
             let rc_to_other_receiver = Rc::new(RefCell::new(to_other_receiver));
@@ -610,8 +613,7 @@ mod tests {
             let recvd_messages = Rc::new(RefCell::new(vec![]));
             let cloned = Rc::clone(&recvd_messages);
             Local::local(async move {
-                while let Some(msg) = (&*rc_to_other_receiver_cloned
-                    .clone())
+                while let Some(msg) = (&*rc_to_other_receiver_cloned.clone())
                     .borrow_mut()
                     .recv()
                     .await
@@ -664,18 +666,21 @@ mod tests {
                     .expect("ok");
 
                 glommio::timer::sleep(Duration::from_micros(300)).await;
-                assert_eq!(test_data.shard.state.borrow().stats.served_forwarded_gets, 1);
                 assert_eq!(
-                    *test_data.other_recvd_messages.borrow().last().unwrap(),
-                    Message::new(
-                        0,
-                        1,
-                        Data::GetResponse {
-                            id: 1,
-                            value: Some(key())
-                        }
-                    )
+                    test_data.shard.state.borrow().stats.served_forwarded_gets,
+                    1
                 );
+                let received_messages = test_data.other_recvd_messages.borrow();
+                let received_message = received_messages.last().unwrap();
+                assert_eq!(received_message.source_id, 0);
+                assert_eq!(received_message.dst_id, 1);
+                match &received_message.data {
+                    Data::GetResponse { id, value } => {
+                        assert_eq!(*id, 1);
+                        assert_eq!(*value, Some(key()))
+                    }
+                    _ => panic!("unexpected message type, expected get response"),
+                }
             })
             .unwrap()
             .join()

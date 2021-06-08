@@ -15,12 +15,12 @@ use super::{
     shard::{Placement, Shard, ShardDatum},
 };
 
-pub struct SharedChannelHandle<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct SharedChannelHandle<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     sender: Option<SharedSender<Message<Data<RangeMapType>>>>,
     receiver: Option<SharedReceiver<Message<Data<RangeMapType>>>>,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> SharedChannelHandle<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> SharedChannelHandle<RangeMapType> {
     pub fn new(size: usize) -> Self {
         let (sender, receiver) = shared_channel::new_bounded::<Message<Data<RangeMapType>>>(size);
         Self {
@@ -31,7 +31,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> SharedChannelHandl
 }
 
 #[derive(Debug)]
-pub struct ShardCommunicationBuilder<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct ShardCommunicationBuilder<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     senders: Vec<SharedSender<Message<Data<RangeMapType>>>>,
     receivers: Vec<SharedReceiver<Message<Data<RangeMapType>>>>,
 }
@@ -42,7 +42,7 @@ pub struct ShardBuilder<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> {
     _range_map: PhantomData<RangeMapType>,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static + PartialEq> ShardBuilder<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardBuilder<RangeMapType> {
     pub fn new(placement: Vec<Placement>, channel_size: usize) -> Self {
         Self {
             placement,

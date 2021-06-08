@@ -139,7 +139,7 @@ impl Workload {
     }
 }
 
-pub struct Ctx<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
+pub struct Ctx<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     pub shard_id: usize,
     pub num_queries: usize,
     pub key_length: usize,
@@ -151,7 +151,7 @@ pub struct Ctx<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> {
     pub workload: Workload,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Ctx<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> Ctx<RangeMapType> {
     pub fn new(
         shard_id: usize,
         num_queries: usize,
@@ -177,11 +177,11 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Ctx<RangeMapType> 
     }
 }
 
-pub struct ShardBenchExt<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
+pub struct ShardBenchExt<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> {
     pub shard: Shard<RangeMapType>,
 }
 impl<RangeMapType> ShardBenchExt<RangeMapType> where
-    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static
+    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static
 {
     pub fn new(shard: Shard<RangeMapType>) -> Self { Self { shard } }
 

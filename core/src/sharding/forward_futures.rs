@@ -5,18 +5,18 @@ use rangetree::RangeMap;
 
 use super::shard::{Shard, ShardDatum};
 
-pub struct ForwardedGet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
+pub struct ForwardedGet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> {
     id: usize,
     shard: Shard<RangeMapType>,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> ForwardedGet<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ForwardedGet<RangeMapType> {
     pub fn new(id: usize, shard: Shard<RangeMapType>) -> Self {
         Self { id, shard }
     }
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> Future
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Future
     for ForwardedGet<RangeMapType>
 {
     type Output = Option<Vec<u8>>;
@@ -43,18 +43,18 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> Future
     }
 }
 
-pub struct ForwardedSet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq + 'static> {
+pub struct ForwardedSet<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> {
     id: usize,
     shard: Shard<RangeMapType>,
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> ForwardedSet<RangeMapType> {
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> ForwardedSet<RangeMapType> {
     pub fn new(id: usize, shard: Shard<RangeMapType>) -> Self {
         Self { id, shard }
     }
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + PartialEq> Future
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> Future
     for ForwardedSet<RangeMapType>
 {
     type Output = ();
