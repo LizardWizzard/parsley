@@ -357,12 +357,12 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
             }
         }
         // spawn consumer from other shards
-        Local::local(Self::consume_from_other_shards(
+        glommio::spawn_local(Self::consume_from_other_shards(
             self.clone(),
             shard_receivers,
         ))
         .detach();
-        Local::later().await;
+        glommio::yield_if_needed().await;
         let mut bench = ShardBenchExt::new(self.clone());
         bench.benchmark().await;
         self
@@ -380,7 +380,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
             .filter(|(idx, _)| *idx != self_id)
         {
             let instance = self.clone();
-            let join_handle = Local::local(async move {
+            let join_handle = glommio::spawn_local(async move {
                 loop {
                     if let Some(msg) = recv.recv().await {
                         if msg.dst_id != self_id {
@@ -416,7 +416,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
                                 let instance = instance.clone();
                                 let source = msg.source_id;
 
-                                Local::local(async move {
+                                glommio::spawn_local(async move {
                                     let value = instance.get(key).await; //Shard::get(&instance, key).await;
                                     instance
                                         .send_to(source, Data::GetResponse { id, value })
@@ -438,7 +438,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
                             Data::SetRequest { id, key, value } => {
                                 let instance = instance.clone();
                                 let source = msg.source_id;
-                                Local::local(async move {
+                                glommio::spawn_local(async move {
                                     instance.set(key, value).await;
                                     instance.send_to(source, Data::SetResponse { id }).await;
                                     instance.state_mut().stats.served_forwarded_sets += 1;
@@ -457,7 +457,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
                             Data::DelRequest { id, key } => {
                                 let mut instance = instance.clone();
                                 let source = msg.source_id;
-                                Local::local(async move {
+                                glommio::spawn_local(async move {
                                     instance.borrow_mut().delete(&key).await;
                                     instance.send_to(source, Data::DelResponse { id }).await;
                                     instance.state_mut().stats.served_forwarded_sets += 1;
@@ -612,7 +612,7 @@ mod tests {
             let rc_to_other_receiver_cloned = rc_to_other_receiver.clone();
             let recvd_messages = Rc::new(RefCell::new(vec![]));
             let cloned = Rc::clone(&recvd_messages);
-            Local::local(async move {
+            glommio::spawn_local(async move {
                 while let Some(msg) = (&*rc_to_other_receiver_cloned.clone())
                     .borrow_mut()
                     .recv()
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_shard_local() {
-        LocalExecutorBuilder::new()
+        LocalExecutorBuilder::new(glommio::Placement::Unbound)
             .spawn(|| async move {
                 let mut test_data = TestData::new().await;
                 // check get set delete

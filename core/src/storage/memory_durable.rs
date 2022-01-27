@@ -4,13 +4,13 @@ use futures::Future;
 
 use super::Storage;
 
-pub struct MemoryStorageGetFuture<'key> {
-    storage: Rc<RefCell<MemoryStorage>>,
+pub struct DurableMemoryStorageGetFuture<'key> {
+    storage: Rc<RefCell<DurableMemoryStorage>>,
     key: &'key [u8],
 }
 
-impl<'key> MemoryStorageGetFuture<'key> {
-    pub fn new(storage: &Rc<RefCell<MemoryStorage>>, key: &'key [u8]) -> Self {
+impl<'key> DurableMemoryStorageGetFuture<'key> {
+    pub fn new(storage: &Rc<RefCell<DurableMemoryStorage>>, key: &'key [u8]) -> Self {
         // TODO try to remove clone using extra lifetime for storage reference
         Self {
             storage: storage.clone(),
@@ -19,7 +19,7 @@ impl<'key> MemoryStorageGetFuture<'key> {
     }
 }
 
-impl<'key> Future for MemoryStorageGetFuture<'key> {
+impl<'key> Future for DurableMemoryStorageGetFuture<'key> {
     type Output = Option<Vec<u8>>;
 
     fn poll(
@@ -33,14 +33,19 @@ impl<'key> Future for MemoryStorageGetFuture<'key> {
     }
 }
 
-pub struct MemoryStorageSetFuture<'key, 'value> {
-    storage: Rc<RefCell<MemoryStorage>>,
+pub struct DurableMemoryStorageSetFuture<'key, 'value> {
+    storage: Rc<RefCell<DurableMemoryStorage>>,
     key: &'key [u8],
     value: &'value [u8],
+    // write_fut: impl Future<Output=()>,
 }
 
-impl<'key, 'value> MemoryStorageSetFuture<'key, 'value> {
-    pub fn new(storage: &Rc<RefCell<MemoryStorage>>, key: &'key [u8], value: &'value [u8]) -> Self {
+impl<'key, 'value> DurableMemoryStorageSetFuture<'key, 'value> {
+    pub fn new(
+        storage: &Rc<RefCell<DurableMemoryStorage>>,
+        key: &'key [u8],
+        value: &'value [u8],
+    ) -> Self {
         Self {
             storage: storage.clone(),
             key,
@@ -49,7 +54,7 @@ impl<'key, 'value> MemoryStorageSetFuture<'key, 'value> {
     }
 }
 
-impl<'key, 'value> Future for MemoryStorageSetFuture<'key, 'value> {
+impl<'key, 'value> Future for DurableMemoryStorageSetFuture<'key, 'value> {
     type Output = ();
 
     fn poll(
@@ -65,13 +70,13 @@ impl<'key, 'value> Future for MemoryStorageSetFuture<'key, 'value> {
     }
 }
 
-pub struct MemoryStorageDelFuture<'key> {
-    storage: Rc<RefCell<MemoryStorage>>,
+pub struct DurableMemoryStorageDelFuture<'key> {
+    storage: Rc<RefCell<DurableMemoryStorage>>,
     key: &'key [u8],
 }
 
-impl<'key> MemoryStorageDelFuture<'key> {
-    pub fn new(storage: &Rc<RefCell<MemoryStorage>>, key: &'key [u8]) -> Self {
+impl<'key> DurableMemoryStorageDelFuture<'key> {
+    pub fn new(storage: &Rc<RefCell<DurableMemoryStorage>>, key: &'key [u8]) -> Self {
         Self {
             storage: storage.clone(),
             key,
@@ -79,7 +84,7 @@ impl<'key> MemoryStorageDelFuture<'key> {
     }
 }
 
-impl<'key> Future for MemoryStorageDelFuture<'key> {
+impl<'key> Future for DurableMemoryStorageDelFuture<'key> {
     type Output = Option<()>;
 
     fn poll(
@@ -97,17 +102,19 @@ impl<'key> Future for MemoryStorageDelFuture<'key> {
 }
 
 #[derive(Debug)]
-pub struct MemoryStorage {
+pub struct DurableMemoryStorage {
     data: HashMap<Vec<u8>, Vec<u8>>,
+    // wal_writer
 }
 
-impl Storage for MemoryStorage {
-    type GetFuture<'key> = MemoryStorageGetFuture<'key>;
-    type SetFuture<'key, 'value> = MemoryStorageSetFuture<'key, 'value>;
-    type DelFuture<'key> = MemoryStorageDelFuture<'key>;
+impl Storage for DurableMemoryStorage {
+    type GetFuture<'key> = DurableMemoryStorageGetFuture<'key>;
+    type SetFuture<'key, 'value> = DurableMemoryStorageSetFuture<'key, 'value>;
+
+    type DelFuture<'key> = DurableMemoryStorageDelFuture<'key>;
 
     fn get<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::GetFuture<'key> {
-        MemoryStorageGetFuture::new(instance, key)
+        DurableMemoryStorageGetFuture::new(&instance, key)
     }
 
     fn set<'key, 'value>(
@@ -115,15 +122,15 @@ impl Storage for MemoryStorage {
         key: &'key [u8],
         value: &'value [u8],
     ) -> Self::SetFuture<'key, 'value> {
-        MemoryStorageSetFuture::new(instance, key, value)
+        DurableMemoryStorageSetFuture::new(instance, key, value)
     }
 
     fn delete<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::DelFuture<'key> {
-        MemoryStorageDelFuture::new(instance, key)
+        DurableMemoryStorageDelFuture::new(&instance, key)
     }
 }
 
-impl MemoryStorage {
+impl DurableMemoryStorage {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),

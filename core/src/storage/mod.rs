@@ -3,6 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use futures::Future;
 
 pub mod memory;
+pub mod memory_durable;
 
 // this is a trait for general storage implementation
 // due to lack of async trait implementing corresponding futures manually

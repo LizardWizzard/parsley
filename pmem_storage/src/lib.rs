@@ -128,11 +128,6 @@ mod tests {
     use crate::{Config, PMemStorage};
 
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-
-    #[test]
     fn it_really_works() {
         // let mut data_dir = env::current_dir().unwrap();
         // data_dir.push("data");

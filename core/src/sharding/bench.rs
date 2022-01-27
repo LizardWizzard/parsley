@@ -1,6 +1,6 @@
 use std::{convert::TryInto, env, ops::Range, time::{Duration, Instant}};
 
-use glommio::{Local, timer};
+use glommio::timer;
 use histogram::Histogram;
 use rand::{Rng, prelude::ThreadRng};
 use rangetree::{RangeMap, RangeSpec};
@@ -283,7 +283,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
             key[1] = second;
             key[2] = third;
             let t0 = Instant::now();
-            // Local::local(async move {
+            // glommio::spawn_local(async move {
             //     semaphore.acquire(1).await;
             //     Shard::get(&ctx.instance, key).await;
             //     semaphore.signal(1);
@@ -367,7 +367,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
         // wait for update of rangemap
         loop {
             if self.shard.state.borrow().datums.len() == 0 {
-                Local::later().await;
+                glommio::yield_if_needed().await;
             } else {
                 break;
             }

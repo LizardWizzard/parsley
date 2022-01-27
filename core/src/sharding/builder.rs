@@ -7,13 +7,13 @@ use std::{marker::PhantomData, thread::JoinHandle, vec};
 
 use glommio::{
     channels::shared_channel::{self, SharedSender},
-    Task,
 };
 
 use super::{
     enums::{Data, Message},
     shard::{Placement, Shard, ShardDatum},
 };
+use glommio::Placement as GlommioPlacement;
 
 pub struct SharedChannelHandle<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
     sender: Option<SharedSender<Message<Data<RangeMapType>>>>,
@@ -102,22 +102,21 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardBuilder<RangeMa
             .zip(per_shard)
             .enumerate()
             .map(|(id, (placement, channels))| {
-                LocalExecutorBuilder::new()
+                LocalExecutorBuilder::new(GlommioPlacement::Fixed(placement.core))
                     .name(&format!("shard-{:}", id))
-                    .pin_to_cpu(placement.core)
                     .spawn(move || async move {
                         let (connected_receivers, connected_senders) = join!(
                             join_all(
                                 channels
                                     .receivers
                                     .into_iter()
-                                    .map(|chan| Task::<_>::local(chan.connect()).detach())
+                                    .map(|chan| glommio::spawn_local(chan.connect()).detach())
                             ),
                             join_all(
                                 channels
                                     .senders
                                     .into_iter()
-                                    .map(|chan| Task::<_>::local(chan.connect()).detach())
+                                    .map(|chan| glommio::spawn_local(chan.connect()).detach())
                             )
                         );
                         // let storage = Rc::new(RefCell::new(DatumStorage::MemoryStorage(MemoryStorage::new())));

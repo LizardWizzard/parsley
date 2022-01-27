@@ -12,6 +12,11 @@ NUMBER_OF_QUERIES = 10 ** 6
 """stats shard_id=0 elapsed=0.036335127 served_own_gets=0 served_own_sets=101125 served_own_deletes=0 served_forwarded_gets=0 served_forwarded_sets=0 served_forwarded_deletes=0 forwarded_gets=0 forwarded_sets=0 forwarded_deletes=0"""
 
 
+def to_env(e: Dict):
+    for k, v in e.items():
+        print(f'export {k}={v}')
+
+
 @dataclasses.dataclass
 class Stats:
     shard_id: int
@@ -245,8 +250,26 @@ def bench_6(log_file: pathlib.Path):
 def bench_7(log_file: pathlib.Path):
     # the same as bench 6 but without persist
     bench_6(log_file)
-    pass
 
+def my_bench(log_file: pathlib.Path):
+    # workload = Workload(
+    #             name="ReadLocalRemote",
+    #             remote_percentage=55,
+    #         )
+
+    workload = Workload(
+            name="StorageWorkloadA",
+            remote_percentage=0,
+            write_percentage=70,
+        )
+    # stats = run_workload(workload)
+    env = get_env(
+        number_of_queries=workload.number_of_queries,
+        remote_percentage=workload.remote_percentage,
+        write_percentage=workload.write_percentage,
+        workload=workload.name,
+    )
+    to_env(env)
 
 def main():
     log_dir = pathlib.Path(__file__).parent / "bench_logs"
