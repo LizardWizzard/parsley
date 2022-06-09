@@ -1,10 +1,8 @@
-from matplotlib import scale
 import seaborn as sns
 import pandas as pd
 import pathlib
 import matplotlib.pyplot as plt
 import matplotlib
-import matplotlib.ticker as mticker
 
 matplotlib.use("TkAgg")
 
