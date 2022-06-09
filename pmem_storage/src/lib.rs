@@ -36,7 +36,6 @@ pub fn busy_sleep(dur: Duration) {
 
 #[derive(Debug)]
 pub struct PMemStorage<const BLOCK_SIZE: usize, const KEY_SIZE: usize, const VALUE_SIZE: usize> {
-    config: Config,
     alloc: PSlabAlloc<BLOCK_SIZE, KEY_SIZE, VALUE_SIZE>,
     // search index store key in a vec and pptr points to value, not key value pair
     search_index: BTreeMap<Vec<u8>, PPtr<[u8; VALUE_SIZE]>>,
@@ -50,7 +49,6 @@ where
     pub fn new(config: Config) -> Self {
         let data_dir = config.base_dir.clone();
         Self {
-            config,
             alloc: PSlabAlloc::new(data_dir),
             search_index: BTreeMap::new(),
         }
@@ -64,7 +62,6 @@ where
         // todo!()
         let alloc = PSlabAlloc::new(config.base_dir.clone());
         Ok(Self {
-            config,
             alloc,
             search_index,
         })
@@ -123,7 +120,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, path::PathBuf, str::FromStr};
+    use std::{fs, path::PathBuf, str::FromStr};
 
     use crate::{Config, PMemStorage};
 

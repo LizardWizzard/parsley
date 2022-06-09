@@ -1,8 +1,9 @@
 [package]
 authors = ["dmitry"]
-edition = "2018"
+edition = "2021"
 name = "core"
 version = "0.1.0"
+
 [dependencies]
 futures-lite = "*"
 futures = "*"
@@ -11,9 +12,10 @@ rand = "*"
 histogram = "*"
 crc32fast = "1.2.1"
 thiserror = "1.0.25"
+glommio = "0.7"
 
-[dependencies.glommio]
-path = "../../glommio/glommio"
+# [dependencies.glommio]
+# path = "../../glommio/glommio"
 
 [dependencies.rangetree]
 path = "../rangetree"
@@ -21,5 +23,5 @@ path = "../rangetree"
 [dependencies.pmem_storage]
 path = "../pmem_storage"
 
-[dependencies.rangetree.glommio]
-path = "../../glommio/glommio"
+# [dependencies.rangetree.glommio]
+# path = "../../glommio/glommio"

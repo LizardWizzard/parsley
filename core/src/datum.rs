@@ -110,7 +110,10 @@ impl PMemDatumStorage {
         log::info!("{:?}", &r);
         let cfg = Config::new(base_dir);
         // FIXME hardcode for benchmark
-        for dir_entry in fs::read_dir(&cfg.base_dir).map_err(|_| panic!("does not exist{:?}", &cfg.base_dir)).unwrap() {
+        for dir_entry in fs::read_dir(&cfg.base_dir)
+            .map_err(|_| panic!("does not exist{:?}", &cfg.base_dir))
+            .unwrap()
+        {
             let path = dir_entry.unwrap().path();
             fs::remove_file(path).unwrap();
         }

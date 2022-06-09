@@ -5,7 +5,7 @@ name = "parsley"
 version = "0.1.0"
 
 [workspace]
-members = [".", "parsley_wal", "core", "rangetree", "pmem_storage"]
+members = [".", "parsley_durable_log", "core", "rangetree", "pmem_storage"]
 
 [dependencies]
 futures = "*"
@@ -15,7 +15,7 @@ core = { path = "core" }
 rangetree = { path = "rangetree" }
 log = "*"
 env_logger = "*"
-glommio = { path = "../glommio/glommio" }
+glommio = "0.7"
 
 [profile.release]
 debug = true

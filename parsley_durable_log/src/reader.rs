@@ -1,6 +1,5 @@
 use std::{
-    array::TryFromSliceError, convert::TryFrom, future::Future, io, ops::Range, path::PathBuf,
-    rc::Rc,
+    array::TryFromSliceError, fmt::Debug, future::Future, io, ops::Range, path::PathBuf, rc::Rc,
 };
 
 use super::{RecordMarker, WalWritable};
@@ -13,8 +12,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum WalReadError {
-    #[error("corrupted segment, unexpected eof")]
-    UnexpectedEof,
+    #[error("corrupted segment, unexpected eof at offset {offset}")]
+    UnexpectedEof { offset: u64 },
 
     #[error("corrupted segment, unexpected eof (length decode failed)")]
     LengthDecodeFailed(#[from] TryFromSliceError),
@@ -22,8 +21,11 @@ pub enum WalReadError {
     #[error("segment checksum mismatch. expected {expected:x?} found {actual:x?}")]
     ChecksumMismatch { expected: u32, actual: u32 },
 
-    #[error("unknown record marker {invalid}")]
-    InvalidRecordMarker { invalid: u8 },
+    #[error("unknown record marker {invalid} at offset {offset}")]
+    InvalidRecordMarker { invalid: u8, offset: u64 },
+
+    #[error("invalid log file name at: {at}")]
+    InvalidLogFileName { at: PathBuf },
 
     #[error("glommio error")]
     GlommioError(#[from] GlommioError<()>),
@@ -36,14 +38,18 @@ pub type WalReadResult<T> = Result<T, WalReadError>;
 
 pub fn read_buf(buf: &[u8], range: Range<usize>) -> WalReadResult<&[u8]> {
     let expected_len = range.len();
-    let slice = &buf.get(range).ok_or(WalReadError::UnexpectedEof)?;
+    let slice = &buf.get(range).ok_or(WalReadError::UnexpectedEof {
+        offset: buf.len() as u64,
+    })?;
     if slice.len() != expected_len {
-        Err(WalReadError::UnexpectedEof)?
+        Err(WalReadError::UnexpectedEof {
+            offset: slice.len() as u64,
+        })?
     }
     Ok(slice)
 }
 
-// TODO customize io::Read
+// TODO can it be customized on top of io::Read?
 pub fn checksummed_read_buf<'a>(
     buf: &'a [u8],
     hasher: &mut Hasher,
@@ -100,7 +106,9 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
 
     // NOTE since for now records larger than buf are not supported this is simpler
     async fn pipe_to_consumer_inner(&mut self) -> WalReadResult<(u64, WalReadResult<()>)> {
+        let mut buf_no = 0;
         loop {
+            crate::debug_print!("reading buf_no {buf_no}");
             // position inside current buffer
             let mut buf_pos = 0;
             // reading from file at a current offset
@@ -109,6 +117,7 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
                 .dma_file
                 .read_at_aligned(self.file_pos, self.buf_size as usize)
                 .await?;
+            buf_no += 1;
             // TODO deserialize from are not fatal, they should be forwarded up to the segment iterator
             // because only it can decide, if there are more segments it is fatal,
             // if this is the last segment this is just abnormal shutdown and we can continue writing
@@ -117,9 +126,17 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
             }
 
             while buf_pos < (read_result.len() - 1) as u64 {
-                match RecordMarker::try_from(read_result[buf_pos as usize])? {
-                    RecordMarker::Data => {
-                        dbg!("data at", self.file_pos + buf_pos);
+                match RecordMarker::try_from_u8(
+                    read_result[buf_pos as usize],
+                    self.file_pos + buf_pos,
+                ) {
+                    Ok(RecordMarker::Data) => {
+                        crate::debug_print!(
+                            "data at file_pos {} buf_pos {} absolute_pos {}",
+                            self.file_pos,
+                            buf_pos,
+                            self.file_pos + buf_pos
+                        );
                         // consume marker
                         buf_pos += 1;
 
@@ -141,8 +158,13 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
                             }
                         }
                     }
-                    RecordMarker::Padding => {
-                        dbg!("padding at", buf_pos);
+                    Ok(RecordMarker::Padding) => {
+                        crate::debug_print!(
+                            "padding at file_pos {} buf_pos {} absolute_pos {}",
+                            self.file_pos,
+                            buf_pos,
+                            self.file_pos + buf_pos
+                        );
                         // FIXME if buffers size when reading is different from the one used for writing
                         // paddings screw it up because padding means empty until buf size.
                         // Two options, write padding size, or have write buf size in wal segment header
@@ -150,8 +172,13 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
                         // (might be inefficient for writing because if buffer is large flush cost can be high)
                         break; // break the while loop
                     }
-                    RecordMarker::Shutdown => {
-                        dbg!("shutdown at", self.file_pos + buf_pos);
+                    Ok(RecordMarker::Shutdown) => {
+                        crate::debug_print!(
+                            "shutdown at file_pos {} buf_pos {} absolute_pos {}",
+                            self.file_pos,
+                            buf_pos,
+                            self.file_pos + buf_pos
+                        );
                         // TODO? technically we can avoid this shutdown marker
                         // because probably there won't be any segments after this one with shutdown record
                         // but in case of a bug we can detect the case when there are files which contain data after shutdown record
@@ -159,6 +186,13 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
 
                         // do not increment to overwrite shutdown marker
                         return Ok((self.file_pos + buf_pos, Ok(())));
+                    }
+                    Err(e) => {
+                        // we reached data that does not match marker
+                        // it either means corruption if this is not the last
+                        // segment, or it is the tip of the log
+                        // forward error up to make the decision
+                        return Ok((self.file_pos + buf_pos, Err(e)));
                     }
                 }
             }
@@ -178,12 +212,28 @@ impl WalReader {
         Self { buf_size, wal_dir }
     }
 
-    fn get_segment_paths(&self) -> WalReadResult<Vec<PathBuf>> {
+    fn get_segment_paths(&self) -> WalReadResult<Vec<(usize, PathBuf)>> {
         let mut segment_files = vec![];
         for segment_file_dir_entry in self.wal_dir.sync_read_dir()? {
-            segment_files.push(segment_file_dir_entry?.path());
+            let segment_file_dir_entry = segment_file_dir_entry?;
+            let err = WalReadError::InvalidLogFileName {
+                at: segment_file_dir_entry.path(),
+            };
+            let segno = match segment_file_dir_entry
+                .path()
+                .file_stem()
+                .map(|s| s.to_string_lossy())
+                .map(|s| s.parse::<usize>())
+            {
+                Some(r) => r.map_err(|_| err),
+                None => Err(err),
+            }?;
+
+            segment_files.push((segno, segment_file_dir_entry.path()));
         }
-        // TODO sort based on lsn in file name
+        segment_files.sort_by_key(|(segno, _)| *segno);
+
+        dbg!(&segment_files);
         Ok(segment_files)
     }
 
@@ -198,8 +248,8 @@ impl WalReader {
         // do this trick to avoid use of moved value
         let mut consumer = Some(consumer);
         let mut stop_pos = 0;
-        for (idx, segment_path) in segment_paths.iter().enumerate() {
-            dbg!(&segment_path);
+        for (segno, segment_path) in segment_paths.iter() {
+            crate::debug_print!("reading {}", segment_path.display());
             let segment_file = DmaFile::open(&segment_path).await?;
 
             let segment_reader =
@@ -208,7 +258,7 @@ impl WalReader {
 
             // we encountered an error for segment other than the last one
             // this shouldnt happen
-            if result.is_err() && idx != segment_paths.len() - 1 {
+            if result.is_err() && *segno != segment_paths.len() - 1 {
                 return Err(result.unwrap_err());
             }
 
@@ -219,7 +269,7 @@ impl WalReader {
         let consumer = consumer.take().unwrap();
         Ok((
             Some(ReadFinishResult {
-                last_segment: segment_paths.last().unwrap().to_path_buf(),
+                last_segment: segment_paths.last().unwrap().1.to_path_buf(),
                 last_segment_pos: stop_pos,
             }),
             consumer,

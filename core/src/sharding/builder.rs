@@ -1,9 +1,9 @@
 use futures::{future::join_all, join};
 use glommio::channels::shared_channel::SharedReceiver;
-use glommio::LocalExecutorBuilder;
+use glommio::{LocalExecutorBuilder, ExecutorJoinHandle};
 use rangetree::RangeMap;
 use std::rc::Rc;
-use std::{marker::PhantomData, thread::JoinHandle, vec};
+use std::{marker::PhantomData, vec};
 
 use glommio::{
     channels::shared_channel::{self, SharedSender},
@@ -93,7 +93,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardBuilder<RangeMa
         per_chard
     }
 
-    pub fn spawn(self) -> Vec<JoinHandle<()>> {
+    pub fn spawn(self) -> Vec<ExecutorJoinHandle<()>> {
         let full_mesh = self.make_full_mesh();
         let per_shard = self.group_per_shard(full_mesh);
 

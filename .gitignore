@@ -1,1 +1,5 @@
 /target
+.vagrant
+bench_logs
+.python-version
+.vscode

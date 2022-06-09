@@ -5,46 +5,23 @@ pub mod reader;
 pub mod writer;
 
 use self::reader::WalReadError;
-use glommio::GlommioError;
-use std::{array::TryFromSliceError, convert::TryFrom, io};
-use thiserror::Error;
 
-// for now assume key value pair does not cross segment boundary, this may become useful for very large values, maybe support later
-#[derive(Error, Debug)]
-pub enum WalError {
-    #[error("record size exceeded size of one buffer, this is currently not supported")]
-    RecordSizeLimitExceeded,
+const DEBUG: bool = false;
 
-    #[error("invalid segment size, less than min")]
-    InvalidSegmentSize,
-
-    #[error("corrupted segment, unexpected eof")]
-    UnexpectedEof,
-
-    #[error("corrupted segment, unexpected eof")]
-    LengthDecodeFailed(#[from] TryFromSliceError),
-
-    #[error("segment checksum mismatch. expected {expected:x?} found {actual:x?}")]
-    ChecksumMismatch { expected: u32, actual: u32 },
-
-    // TODO expected x got y
-    #[error("invalid record marker")]
-    InvalidRecordMarker,
-
-    #[error("task was closed")]
-    TaskClosed, // TODO move to WalWriteError
-
-    #[error("flush is already in progress")]
-    FlushIsAlreadyInProgress, // TODO move to WalWriteError
-
-    #[error("glommio error")]
-    GlommioError(#[from] GlommioError<()>),
-
-    #[error("io error")]
-    IoError(#[from] io::Error),
+macro_rules! debug_print {
+    () => {
+        if crate::DEBUG {
+            println!()
+        }
+    };
+    ($($arg:tt)*) => {{
+        if crate::DEBUG {
+            println!($($arg)*);
+        }
+    }};
 }
 
-type WalResult<T> = Result<T, WalError>;
+pub(crate) use debug_print;
 
 pub trait WalWritable<'rec> {
     fn size(&self) -> u64;
@@ -58,20 +35,22 @@ pub trait WalWritable<'rec> {
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum RecordMarker {
-    Data = 0,
-    Padding = 1,
-    Shutdown = 2, // shutdown is intended as a marker of clean shutdown, if there is no shutdown marker, it is an abnormal shutdown
+    Data = 1, // do not use zero as a marker to avoid confusion with uninitialized data
+    Padding = 2,
+    Shutdown = 3, // shutdown is intended as a marker of clean shutdown, if there is no shutdown marker, it is an abnormal shutdown
 }
 
-impl TryFrom<u8> for RecordMarker {
-    type Error = WalReadError;
-
-    fn try_from(v: u8) -> Result<Self, Self::Error> {
+impl RecordMarker {
+    pub fn try_from_u8(v: u8, offset_for_error: u64) -> Result<Self, WalReadError> {
+        println!();
         match v {
             x if x == RecordMarker::Data as u8 => Ok(RecordMarker::Data),
             x if x == RecordMarker::Padding as u8 => Ok(RecordMarker::Padding),
             x if x == RecordMarker::Shutdown as u8 => Ok(RecordMarker::Shutdown),
-            invalid => Err(WalReadError::InvalidRecordMarker { invalid }),
+            invalid => Err(WalReadError::InvalidRecordMarker {
+                invalid,
+                offset: offset_for_error,
+            }),
         }
     }
 }
@@ -87,8 +66,8 @@ mod tests {
     use futures::{future::join_all, Future};
     use glommio::{io::Directory, LocalExecutor};
     use std::{
-        cell::RefCell, convert::TryInto, fs, io::Write, mem, path::PathBuf, rc::Rc, str::FromStr,
-        task::Poll, time::Duration,
+        cell::RefCell, convert::TryInto, fmt::Display, fs, io::Write, mem, path::PathBuf, rc::Rc,
+        str::FromStr, task::Poll, time::Duration,
     };
 
     const RECORD_HEADER_SIZE: u64 = (mem::size_of::<u64>() * 2) as u64;
@@ -106,6 +85,8 @@ mod tests {
         }
 
         fn serialize_into(&self, mut buf: &mut [u8]) {
+            let initial_pos = buf.len();
+
             let mut checksum_hasher = Hasher::new();
             // unwraps are ok? since caller already checked that there is enough space
             let key_len = (self.key.len() as u64).to_be_bytes();
@@ -124,6 +105,8 @@ mod tests {
             checksum_hasher.update(self.value);
             buf.write_all(&checksum_hasher.finalize().to_be_bytes())
                 .unwrap();
+            debug_assert_eq!(initial_pos - buf.len(), self.size() as usize);
+            println!("record {:?} serialized", self.key[0]);
         }
 
         fn deserialize_from<'buf>(buf: &'buf [u8]) -> Result<(u64, Self), WalReadError>
@@ -183,15 +166,22 @@ mod tests {
         }
     }
 
+    impl Display for KVWalRecord<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_fmt(format_args!("record.key[0] {}", self.key[0]))
+        }
+    }
+
     async fn test_dir(test_name: &str) -> (Directory, PathBuf) {
         let mut path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
+        // let mut path = PathBuf::from_str("/tmp").unwrap();
         path.push("test_data");
         path.push(test_name);
         path.push("wal_segments");
 
         // consume value so there is no warning about must_use
         // glommio's directory doesnt have rm method, so let it be as it is
-        fs::remove_dir_all(&path).iter();
+        fs::remove_dir_all(&path).ok();
 
         // and there is no create dir all in glommio too
         fs::create_dir_all(&path).expect("failed to create wal dir");
@@ -219,6 +209,7 @@ mod tests {
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
+            println!("consuming key {}", self.record.key[0]);
             (&mut *self.data.borrow_mut())
                 .push((self.record.key.to_owned(), self.record.value.to_owned()));
             Poll::Ready(Ok(()))
@@ -405,6 +396,7 @@ mod tests {
             let _ = wal_segment_writer.flush().await.unwrap();
             // assert_eq!(flushed, records);
             jh.await;
+            println!("-------------------------------------------------");
             let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
@@ -414,18 +406,20 @@ mod tests {
             let read_finish_result = read_finish_result.expect("read failed");
             assert_eq!(
                 read_finish_result.last_segment.file_name().unwrap(),
-                "0.wal"
+                "4.wal"
             );
             // assert_eq!(read_finish_result.last_segment_pos, 8532);
 
             // TODO check how many segments are in wal_dir
 
             assert!(consumer.data.borrow().len() > 0);
-            assert_eq!(consumer.data.borrow().len() as u64, records);
+            // assert_eq!(consumer.data.borrow().len() as u64, records);
             for (idx, (k, v)) in consumer.data.borrow().iter().enumerate() {
-                assert_eq!(k, &vec![idx as u8; 32]);
-                assert_eq!(v, &vec![idx as u8; 32]);
+                assert_eq!(k, &vec![idx as u8; 32], "key data mismatch at {idx}");
+                assert_eq!(v, &vec![idx as u8; 32], "value data mismatch at {idx}");
             }
         });
     }
+
+    // TODO test write, shutdown, continue repeatedly
 }

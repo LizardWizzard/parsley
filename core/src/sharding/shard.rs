@@ -13,7 +13,7 @@ use std::{
     vec,
 };
 
-use glommio::{channels::shared_channel::ConnectedSender, prelude::*};
+use glommio::channels::shared_channel::ConnectedSender;
 
 use crate::{
     datum::{BTreeModelStorage, Datum, DatumStorage, LSMTreeModelStorage, PMemDatumStorage},

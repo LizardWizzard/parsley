@@ -1,5 +1,5 @@
 [package]
-name = "parsley_wal"
+name = "parsley_durable_log"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,12 @@ edition = "2021"
 [dependencies]
 futures = "*"
 futures-lite = "*"
-glommio = { path = "../../glommio/glommio" }
+glommio = "0.7"
 crc32fast = "1.2.1"
 thiserror = "1.0.25"
+histogram = "0.6.9"
+
+
+[[bench]]
+name = "bench_simple_write"
+harness = false

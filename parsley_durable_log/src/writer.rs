@@ -1,22 +1,60 @@
 use std::{
     cell::{RefCell, RefMut},
     collections::VecDeque,
+    fmt::Display,
     io::Write,
     mem,
+    path::PathBuf,
     rc::Rc,
-    task::{Poll, Waker}, path::PathBuf,
+    task::{Poll, Waker},
+    time::Instant,
 };
 
-use super::{RecordMarker, WalError, WalResult, WalWritable};
+use super::{RecordMarker, WalWritable};
 use futures::future::join_all;
 use futures_lite::future::poll_fn;
-use glommio::io::DmaFile;
 use glommio::{io::Directory, sync::RwLock};
 use glommio::{io::DmaBuffer, task::JoinHandle};
+use glommio::{io::DmaFile, GlommioError};
+use histogram::Histogram;
+use thiserror::Error;
 
 fn wal_file_name(idx: u64) -> String {
     format!("{}.wal", idx)
 }
+
+// for now assume key value pair does not cross segment boundary, this may become useful for very large values, maybe support later
+#[derive(Error, Debug)]
+pub enum WalWriteError {
+    #[error("record size exceeded size of one buffer, this is currently not supported")]
+    RecordSizeLimitExceeded,
+    // #[error("corrupted segment, unexpected eof at offset {offset}")]
+    // UnexpectedEof { offset: u64 },
+
+    // #[error("corrupted segment, unexpected eof (length decode failed)")]
+    // LengthDecodeFailed(#[from] TryFromSliceError),
+
+    // #[error("segment checksum mismatch. expected {expected:x?} found {actual:x?}")]
+    // ChecksumMismatch { expected: u32, actual: u32 },
+
+    // #[error("unknown record marker {invalid} at offset {offset}")]
+    // InvalidRecordMarker { invalid: u8, offset: u64 },
+
+    // #[error("invalid log file name at: {at}")]
+    // InvalidLogFileName { at: PathBuf },
+    #[error("task was closed")]
+    TaskClosed,
+
+    #[error("flush is already in progress")]
+    FlushIsAlreadyInProgress,
+
+    #[error("glommio error")]
+    GlommioError(#[from] GlommioError<()>),
+    // #[error("io error")]
+    // IoError(#[from] io::Error),
+}
+
+pub type WalWriteResult<T> = Result<T, WalWriteError>;
 
 enum WriteState {
     Pending(Waker),
@@ -31,12 +69,13 @@ struct WalSegmentWriterState {
     // which writes are durable during flush. Flush operation is issued when
     // we are in a specific offset of the file, and when flush is completed
     // writes with lower offset are considered durable
-    // TODO what about multiple segments and this u64?
+    // TODO what about multiple segments and this u64? segment no should be included
     flush_waiter_wakers: Vec<(u64, WriteState)>,
     // these are handles to tasks which write filled buffers
     // FIXME we do nothing with pending tasks, we need to ensure that buffers scheduled
     // to write with position less than flush positon are successfully written
-    pending_writes: Vec<(u64, JoinHandle<WalResult<()>>)>,
+    // FIXME include segment no
+    pending_writes: Vec<(u64, JoinHandle<WalWriteResult<()>>)>,
     // queue of allocated dma buffers (cannot be shared between different files, TODO find out why)
     // TODO make a task that fills the queue in the background
     // TODO do not fill with new buffers when segment is about to be finished
@@ -67,10 +106,11 @@ impl WalSegmentWriterState {
         }
     }
 
-    pub fn write_record<'a, T: WalWritable<'a>>(&mut self, record: T) {
+    pub fn write_record<'a, T: WalWritable<'a>>(&mut self, record: &T) {
         let buf = self.buf_queue[0].as_bytes_mut();
         buf[self.buf_pos as usize] = RecordMarker::Data as u8;
         self.buf_pos += 1;
+        // TODO where buf_pos is incremented for record?
         record.serialize_into(&mut buf[self.buf_pos as usize..]);
     }
 
@@ -90,7 +130,9 @@ struct WalWriterState {
     current_segment_idx: u64,
     current_segment_writer_state: WalSegmentWriterState,
     flush_is_in_progress: bool,
+    has_unflushed_records: bool,
     switch_segments_lock: Rc<RwLock<()>>,
+    write_distribution_histogram: Histogram,
 }
 
 #[derive(Clone)]
@@ -107,7 +149,7 @@ impl WalWriter {
         buf_size: u64,
         buf_num: usize,
         segment_size: u64,
-    ) -> WalResult<Self> {
+    ) -> WalWriteResult<Self> {
         // TODO find out if continue segment file is some
         //  or create new in wal dir
         let segment_file = match continue_segment_file {
@@ -131,12 +173,19 @@ impl WalWriter {
             current_segment_writer_state: segment_writer_state,
             current_segment_idx: continue_segment_file_idx.unwrap_or(0),
             flush_is_in_progress: false,
+            has_unflushed_records: false,
             switch_segments_lock: Rc::new(RwLock::new(())),
+            write_distribution_histogram: Histogram::new(),
         };
 
         Ok(Self {
             state: Rc::new(RefCell::new(state)),
         })
+    }
+
+    pub fn write_distribution_histogram(&self) -> Histogram {
+        let state = self.state.borrow();
+        state.write_distribution_histogram.clone()
     }
 
     fn rotate_buffer(&self, state: &mut RefMut<'_, WalWriterState>, record_size: u64) {
@@ -154,10 +203,16 @@ impl WalWriter {
             }
             state.current_segment_writer_state.buf_pos = 0;
 
+            // if remaining size is not less than buf_num * buf_size
+            // TODO split into function and write tests for it
+            // if !(state.segment_size - state.current_segment_writer_state.file_pos
+            //     < state.buf_num as u64 * state.buf_size)
+            // {
             let new_buf = state
                 .current_segment_writer_state
                 .segment_file
                 .alloc_dma_buffer(state.buf_size as usize);
+
             state
                 .current_segment_writer_state
                 .buf_queue
@@ -185,13 +240,13 @@ impl WalWriter {
 
     // TODO avoid using state, pass needed variables instead?
     fn should_switch_segments(state: &RefMut<'_, WalWriterState>, record_size: u64) -> bool {
-        state.current_segment_writer_state.file_pos + record_size > state.segment_size
+        state.current_segment_writer_state.file_pos
+            + state.current_segment_writer_state.buf_pos
+            + record_size
+            > state.segment_size
     }
 
-    async fn switch_segments(
-        &self,
-        record_size: u64,
-    ) -> WalResult<()> {
+    async fn switch_segments(&self, record_size: u64) -> WalWriteResult<()> {
         let state = self.state.borrow_mut();
         if !Self::should_switch_segments(&state, record_size) {
             return Ok(());
@@ -200,25 +255,28 @@ impl WalWriter {
         let lock = Rc::clone(&state.switch_segments_lock);
         drop(state);
         // What a dance with Rc and drop...
-        println!("acquiring switch segments lock");
+        crate::debug_print!("acquiring switch segments lock");
         // just a way to wait for already running flush to complete
         let _guard = lock.write().await.unwrap();
-        println!("switch segments lock acquired");
+        crate::debug_print!("switch segments lock acquired");
         let mut state = self.state.borrow_mut();
         if !Self::should_switch_segments(&state, record_size) {
-            println!("no need to flush after concurrent flush finished");
+            crate::debug_print!("no need to flush after concurrent flush finished");
             return Ok(());
         }
 
-        println!(
-            "got file_pos + record_size > segment_size {} + {} > {}",
-            state.current_segment_writer_state.file_pos, record_size, state.segment_size
+        crate::debug_print!(
+            "got file_pos + buf_size + record_size > segment_size {} + {} + {} > {}",
+            state.current_segment_writer_state.file_pos,
+            state.current_segment_writer_state.buf_pos,
+            record_size,
+            state.segment_size
         );
         // Switch segments
         // Some things can be improved to decrease latency during a segment switch, but
         //  this should be pretty infrequent operation, so maybe it is better to avoid these
         //  complications and keep the code simpler
-        // 0. do we need to block other operations? (TODO probably yes)
+        // 0. do we need to block other operations? (TODO no, preallocate segments)
         // 1. issue self.flush for current segment
         //      currently we can do it synchronously but it is possible to spawn it
         //      but it requires extra reasoning and correctness checks
@@ -238,27 +296,48 @@ impl WalWriter {
         let new_segment_path = state.wal_dir_path.join(wal_file_name(current_segment_idx));
 
         // pad current buffer so reader correctly parses it
-        // TODO can there be some smart strategy about that? 
+        // TODO do we need switch segment marker?
+        // TODO can there be some smart strategy about that?
         //  Because padding means that other parts are left. See comment about the same thing
-        //  inside flush_inner 
-        let mut buf = state
+        //  inside flush_inner
+        let pad_write_pos = if state.buf_size - state.current_segment_writer_state.buf_pos > 0 {
+            Some(state.current_segment_writer_state.buf_pos as usize)
+        } else {
+            None
+        };
+
+        let buf = state
             .current_segment_writer_state
             .buf_queue
-            .pop_front()
+            .get_mut(0)
             .unwrap();
-        if state.buf_size - state.current_segment_writer_state.buf_pos > 0 {
-            buf.as_bytes_mut()[state.current_segment_writer_state.buf_pos as usize] =
-                RecordMarker::Padding as u8;
-            dbg!("inserting switch padding at", state.current_segment_writer_state.file_pos + state.current_segment_writer_state.buf_pos);  
-            state.current_segment_writer_state.buf_pos += 1;  
+
+        if let Some(pos) = pad_write_pos {
+            buf.as_bytes_mut()[pos] = RecordMarker::Padding as u8;
+            crate::debug_print!(
+                "state.current_segment_writer_state.file_pos {}",
+                state.current_segment_writer_state.file_pos
+            );
+            crate::debug_print!(
+                "state.current_segment_writer_state.buf_pos {}",
+                state.current_segment_writer_state.buf_pos
+            );
+
+            crate::debug_print!(
+                "inserting switch padding at {}",
+                state.current_segment_writer_state.file_pos
+                    + state.current_segment_writer_state.buf_pos
+            );
+            state.current_segment_writer_state.buf_pos += 1;
         }
 
         let wal_dir_to_fsync = state.wal_dir.try_clone().unwrap(); // why I cant just get the same fd without duplication?
 
         drop(state);
         self.flush().await?;
+        // TODO can we batch these calls?
         current_segment_file.close_rc().await?;
-        let new_segment_file = DmaFile::create(new_segment_path).await?;
+        let new_segment_file = DmaFile::create(&new_segment_path).await?;
         wal_dir_to_fsync.sync().await?;
 
         let mut state = self.state.borrow_mut();
@@ -276,17 +355,19 @@ impl WalWriter {
             state.buf_size,
             state.buf_num,
         );
+
+        crate::debug_print!("switch to new segment completed {new_segment_path:?}");
         Ok(())
     }
 
-    pub async fn write<'a, T: WalWritable<'a>>(&self, record: T) -> WalResult<()> {
+    pub async fn write<'a, T: WalWritable<'a> + Display>(&self, record: T) -> WalWriteResult<()> {
         let state = self.state.borrow_mut();
         let record_size = record.size();
         if record_size > state.buf_size {
             // for now this is a limitation
-            return Err(WalError::RecordSizeLimitExceeded);
+            return Err(WalWriteError::RecordSizeLimitExceeded);
         }
-        println!(
+        crate::debug_print!(
             "write start file_pos + buf_pos + record_size {} + {} + {} = {}",
             state.current_segment_writer_state.file_pos,
             state.current_segment_writer_state.buf_pos,
@@ -295,18 +376,24 @@ impl WalWriter {
                 + state.current_segment_writer_state.buf_pos
                 + record_size
         );
-        // TODO if we open next segment in advance, can we begin scheduling  new writes before segment switch is finished?
-        //    probably not, because then if flush fails we can persist the data but answer with an error ???????????????
+        // TODO if we open next segment in advance, can we begin scheduling new writes before segment switch is finished?
+        //   take into account waiting for pending writes
         // so annoying to not be able to pass it directly...
         drop(state);
+
+        let write_start = Instant::now();
+
         self.switch_segments(record_size).await?;
 
         let mut state = self.state.borrow_mut();
 
         // if record doesn't fit current buffer, schedule write of the current buffer and move on with the next one
         self.rotate_buffer(&mut state, record_size);
-        state.current_segment_writer_state.write_record(record);
+        state.current_segment_writer_state.write_record(&record);
         state.current_segment_writer_state.buf_pos += record_size;
+
+        state.has_unflushed_records = true;
+
         let file_pos = state.current_segment_writer_state.file_pos;
         let buf_pos = state.current_segment_writer_state.buf_pos;
         drop(state);
@@ -340,11 +427,16 @@ impl WalWriter {
             }
         })
         .await;
-        println!("write end");
+        crate::debug_print!("write end {}", record);
+        let mut state = self.state.borrow_mut();
+        state
+            .write_distribution_histogram
+            .increment(write_start.elapsed().as_micros().try_into().unwrap())
+            .unwrap();
         Ok(())
     }
 
-    pub async fn write_shutdown(&self) -> WalResult<()> {
+    pub async fn write_shutdown(&self) -> WalWriteResult<()> {
         let mut state = self.state.borrow_mut();
         self.rotate_buffer(&mut state, 1);
         state.current_segment_writer_state.write_shutdown();
@@ -360,7 +452,7 @@ impl WalWriter {
         Ok(())
     }
 
-    async fn flush_inner(&self) -> WalResult<u64> {
+    async fn flush_inner(&self) -> WalWriteResult<u64> {
         let mut state = self.state.borrow_mut();
         // get current buffer
         let mut dma_buf = state
@@ -368,6 +460,17 @@ impl WalWriter {
             .buf_queue
             .pop_front()
             .unwrap(); // TODO use NonEmptyVec type to avoid it?
+
+        let buf_pos = state.current_segment_writer_state.buf_pos as usize;
+
+        // overwrite next byte with something that does not look like valid data marker: with zero
+        // this is needed because when buffer is reallocated it contains old data, so it is possible that
+        // valid data that was there on previous buffer flush is still there and looks as valid data
+        // so to prevent reading it as valid add explicit zero.
+        let rem = state.buf_size as usize - buf_pos;
+        if rem > 0 {
+            dma_buf.as_bytes_mut()[buf_pos] = 0;
+        }
 
         // allocate a new one, and push it to the queue
         let new_buf = state
@@ -386,7 +489,7 @@ impl WalWriter {
         // TODO explore which is better, maybe just pad current buf and move to next one,
         // or even maybe use heuristic approach, e.g. if less than 1/3 buffer left pad it and move on,
         // if more space is available make copy and submit as is
-        let buf_pos = state.current_segment_writer_state.buf_pos as usize;
+        // TODO revisit
         // TODO copy from slice instead write_all
         state.current_segment_writer_state.buf_queue[0]
             .as_bytes_mut()
@@ -398,7 +501,7 @@ impl WalWriter {
         // this is the position of the log that will become guaranteed to be durable
         let flush_file_pos = state.current_segment_writer_state.file_pos
             + state.current_segment_writer_state.buf_pos;
-        println!("flush_file_pos: {}", flush_file_pos);
+        crate::debug_print!("flush_file_pos: {}", flush_file_pos);
 
         // TODO how we can guarantee that all the writes in pending writes are ordered?
         let file_pos = state.current_segment_writer_state.file_pos;
@@ -427,7 +530,7 @@ impl WalWriter {
             .map(|(_, join_handle)| join_handle)
             .collect(); // we can probably avoid this collect
 
-        println!("pending writes: {}", pending_writes.len());
+        crate::debug_print!("pending writes: {}", pending_writes.len());
         drop(state);
 
         // TODO have a plan on what to do if one of the writes fails before the fsync,
@@ -436,7 +539,7 @@ impl WalWriter {
 
         // wait for pending writes to complete
         for pending_write_result in join_all(pending_writes).await {
-            pending_write_result.ok_or(WalError::TaskClosed)??;
+            pending_write_result.ok_or(WalWriteError::TaskClosed)??;
         }
 
         // ensure that all previous writes are durable
@@ -453,21 +556,25 @@ impl WalWriter {
                 let old_state = mem::replace(write_state, WriteState::Ready);
                 match old_state {
                     WriteState::Pending(waker) => waker.wake(),
-                    WriteState::Ready => {} // TODO why is it reacheable? unreacheable? can we encounter elready finished writes?
+                    // TODO why is it reacheable? unreacheable? can we encounter elready finished writes?
+                    WriteState::Ready => unreachable!(),
                 };
                 ctr += 1;
             });
-        println!("flush end");
+        crate::debug_print!("flush end");
         Ok(ctr)
     }
 
-    pub async fn flush(&self) -> WalResult<u64> {
+    pub async fn flush(&self) -> WalWriteResult<u64> {
         let mut state = self.state.borrow_mut();
-        // in reality there should be a sufficiently large gap between flushes
-        // so flush won't be triggered concurrently.
+
+        if !state.has_unflushed_records {
+            // nothing to flush
+            return Ok(0);
+        }
 
         if state.flush_is_in_progress {
-            return Err(WalError::FlushIsAlreadyInProgress);
+            return Err(WalWriteError::FlushIsAlreadyInProgress);
         }
         state.flush_is_in_progress = true;
         drop(state);
@@ -475,14 +582,35 @@ impl WalWriter {
             Ok(flushed) => {
                 // ugly borrow_mut again...
                 let mut state = self.state.borrow_mut();
+
                 state.flush_is_in_progress = false;
+
+                // if no pending writes reset has_unflushed_ ...
+                // TODO is it safe? test it ...
+                if state
+                    .current_segment_writer_state
+                    .flush_waiter_wakers
+                    .is_empty()
+                {
+                    state.has_unflushed_records = false;
+                }
+
                 Ok(flushed)
-            },
+            }
             e @ Err(_) => {
                 let mut state = self.state.borrow_mut();
                 state.flush_is_in_progress = false;
+
+                if state
+                    .current_segment_writer_state
+                    .flush_waiter_wakers
+                    .is_empty()
+                {
+                    state.has_unflushed_records = false;
+                }
+
                 e
-            },
+            }
         }
     }
 }
