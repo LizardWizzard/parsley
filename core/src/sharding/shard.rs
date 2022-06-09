@@ -560,7 +560,7 @@ mod tests {
     use super::Placement;
     use super::*;
     use futures::join;
-    use glommio::channels::shared_channel;
+    use glommio::{channels::shared_channel, LocalExecutorBuilder};
     use rangetree::rangevec::RangeVec;
     use std::time::Duration;
 
