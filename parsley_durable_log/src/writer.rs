@@ -11,8 +11,7 @@ use std::{
 };
 
 use super::{RecordMarker, WalWritable};
-use futures::future::join_all;
-use futures_lite::future::poll_fn;
+use futures::future::{join_all, poll_fn};
 use glommio::{io::Directory, sync::RwLock};
 use glommio::{io::DmaBuffer, task::JoinHandle};
 use glommio::{io::DmaFile, GlommioError};
@@ -78,7 +77,7 @@ struct WalSegmentWriterState {
     pending_writes: Vec<(u64, JoinHandle<WalWriteResult<()>>)>,
     // queue of allocated dma buffers (cannot be shared between different files, TODO find out why)
     // TODO make a task that fills the queue in the background
-    // TODO do not fill with new buffers when segment is about to be finished
+    // TODO do not fill with new buffers when segment is about to be finished (check if buffers can be reused between files)
     buf_queue: VecDeque<DmaBuffer>,
     // posision in the current buffer (buf_queue[0])
     buf_pos: u64,
@@ -110,7 +109,6 @@ impl WalSegmentWriterState {
         let buf = self.buf_queue[0].as_bytes_mut();
         buf[self.buf_pos as usize] = RecordMarker::Data as u8;
         self.buf_pos += 1;
-        // TODO where buf_pos is incremented for record?
         record.serialize_into(&mut buf[self.buf_pos as usize..]);
     }
 
@@ -132,7 +130,8 @@ struct WalWriterState {
     flush_is_in_progress: bool,
     has_unflushed_records: bool,
     switch_segments_lock: Rc<RwLock<()>>,
-    write_distribution_histogram: Histogram,
+    write_duration_histogram: Histogram,
+    flush_duration_histogram: Histogram,
 }
 
 #[derive(Clone)]
@@ -175,7 +174,8 @@ impl WalWriter {
             flush_is_in_progress: false,
             has_unflushed_records: false,
             switch_segments_lock: Rc::new(RwLock::new(())),
-            write_distribution_histogram: Histogram::new(),
+            write_duration_histogram: Histogram::new(),
+            flush_duration_histogram: Histogram::new(),
         };
 
         Ok(Self {
@@ -185,7 +185,12 @@ impl WalWriter {
 
     pub fn write_distribution_histogram(&self) -> Histogram {
         let state = self.state.borrow();
-        state.write_distribution_histogram.clone()
+        state.write_duration_histogram.clone()
+    }
+
+    pub fn flush_duration_histogram(&self) -> Histogram {
+        let state = self.state.borrow();
+        state.flush_duration_histogram.clone()
     }
 
     fn rotate_buffer(&self, state: &mut RefMut<'_, WalWriterState>, record_size: u64) {
@@ -430,7 +435,7 @@ impl WalWriter {
         crate::debug_print!("write end {}", record);
         let mut state = self.state.borrow_mut();
         state
-            .write_distribution_histogram
+            .write_duration_histogram
             .increment(write_start.elapsed().as_micros().try_into().unwrap())
             .unwrap();
         Ok(())
@@ -578,6 +583,7 @@ impl WalWriter {
         }
         state.flush_is_in_progress = true;
         drop(state);
+        let flush_start = Instant::now();
         match self.flush_inner().await {
             Ok(flushed) => {
                 // ugly borrow_mut again...
@@ -594,6 +600,11 @@ impl WalWriter {
                 {
                     state.has_unflushed_records = false;
                 }
+
+                state
+                    .flush_duration_histogram
+                    .increment(flush_start.elapsed().as_micros().try_into().unwrap())
+                    .unwrap();
 
                 Ok(flushed)
             }

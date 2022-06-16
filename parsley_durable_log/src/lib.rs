@@ -2,6 +2,8 @@
 #![feature(drain_filter)]
 
 pub mod reader;
+#[cfg(feature = "test_utils")]
+pub mod test_utils;
 pub mod writer;
 
 use self::reader::WalReadError;
@@ -57,140 +59,15 @@ impl RecordMarker {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        reader::{checksummed_read_buf, read_buf, WalConsumer, WalReadError, WalReadResult},
-        WalWritable,
+    use super::reader::{WalConsumer, WalReadResult};
+    use crate::{
+        reader::WalReader,
+        test_utils::{kv_record::KVWalRecord, test_dir_open},
+        writer::WalWriter,
     };
-    use crate::{reader::WalReader, writer::WalWriter};
-    use crc32fast::Hasher;
     use futures::{future::join_all, Future};
-    use glommio::{io::Directory, LocalExecutor};
-    use std::{
-        cell::RefCell, convert::TryInto, fmt::Display, fs, io::Write, mem, path::PathBuf, rc::Rc,
-        str::FromStr, task::Poll, time::Duration,
-    };
-
-    const RECORD_HEADER_SIZE: u64 = (mem::size_of::<u64>() * 2) as u64;
-    const SIZE_OF_SIZE: u64 = mem::size_of::<u64>() as u64;
-    const CHECKSUM_SIZE: u64 = mem::size_of::<u32>() as u64;
-
-    pub struct KVWalRecord<'rec> {
-        key: &'rec [u8],
-        value: &'rec [u8],
-    }
-
-    impl<'rec> WalWritable<'rec> for KVWalRecord<'rec> {
-        fn size(&self) -> u64 {
-            RECORD_HEADER_SIZE + (self.key.len() + self.value.len()) as u64 + CHECKSUM_SIZE
-        }
-
-        fn serialize_into(&self, mut buf: &mut [u8]) {
-            let initial_pos = buf.len();
-
-            let mut checksum_hasher = Hasher::new();
-            // unwraps are ok? since caller already checked that there is enough space
-            let key_len = (self.key.len() as u64).to_be_bytes();
-            buf.write_all(&key_len).unwrap();
-
-            let value_len = (self.value.len() as u64).to_be_bytes();
-            buf.write_all(&value_len).unwrap();
-
-            buf.write_all(self.key).unwrap();
-            buf.write_all(self.value).unwrap();
-
-            checksum_hasher.update(&key_len);
-            checksum_hasher.update(&value_len);
-
-            checksum_hasher.update(self.key);
-            checksum_hasher.update(self.value);
-            buf.write_all(&checksum_hasher.finalize().to_be_bytes())
-                .unwrap();
-            debug_assert_eq!(initial_pos - buf.len(), self.size() as usize);
-            println!("record {:?} serialized", self.key[0]);
-        }
-
-        fn deserialize_from<'buf>(buf: &'buf [u8]) -> Result<(u64, Self), WalReadError>
-        where
-            Self: Sized,
-            'buf: 'rec,
-        {
-            let mut checksum_hasher = Hasher::new();
-            let mut pos = 0;
-            let key_size = u64::from_be_bytes(
-                checksummed_read_buf(
-                    &buf,
-                    &mut checksum_hasher,
-                    pos as usize..(pos + SIZE_OF_SIZE) as usize,
-                )?
-                .try_into()?,
-            );
-            pos += SIZE_OF_SIZE;
-
-            let value_size = u64::from_be_bytes(
-                checksummed_read_buf(
-                    &buf,
-                    &mut checksum_hasher,
-                    pos as usize..(pos + SIZE_OF_SIZE) as usize,
-                )?
-                .try_into()?,
-            );
-            pos += SIZE_OF_SIZE;
-
-            let key = checksummed_read_buf(
-                &buf,
-                &mut checksum_hasher,
-                pos as usize..(pos + key_size) as usize,
-            )?;
-            pos += key_size;
-
-            let value = checksummed_read_buf(
-                &buf,
-                &mut checksum_hasher,
-                pos as usize..(pos + value_size) as usize,
-            )?;
-            pos += value_size;
-
-            let actual_checksum = u32::from_be_bytes(
-                read_buf(&buf, pos as usize..(pos + CHECKSUM_SIZE) as usize)?.try_into()?,
-            );
-            let expected_checksum = checksum_hasher.finalize();
-            if actual_checksum != expected_checksum {
-                Err(WalReadError::ChecksumMismatch {
-                    expected: expected_checksum,
-                    actual: actual_checksum,
-                })?;
-            }
-            pos += CHECKSUM_SIZE;
-            let rec = KVWalRecord { key, value };
-            Ok((pos, rec))
-        }
-    }
-
-    impl Display for KVWalRecord<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_fmt(format_args!("record.key[0] {}", self.key[0]))
-        }
-    }
-
-    async fn test_dir(test_name: &str) -> (Directory, PathBuf) {
-        let mut path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
-        // let mut path = PathBuf::from_str("/tmp").unwrap();
-        path.push("test_data");
-        path.push(test_name);
-        path.push("wal_segments");
-
-        // consume value so there is no warning about must_use
-        // glommio's directory doesnt have rm method, so let it be as it is
-        fs::remove_dir_all(&path).ok();
-
-        // and there is no create dir all in glommio too
-        fs::create_dir_all(&path).expect("failed to create wal dir");
-        let dir = Directory::open(&path)
-            .await
-            .expect("failed to create wal dir for test directory");
-        dir.sync().await.expect("failed to sync wal dir");
-        (dir, path)
-    }
+    use glommio::LocalExecutor;
+    use std::{cell::RefCell, rc::Rc, task::Poll, time::Duration};
 
     #[derive(Default)]
     struct StubConsumer {
@@ -237,7 +114,7 @@ mod tests {
     fn read_write_segment() {
         let ex = LocalExecutor::default();
         ex.run(async move {
-            let (wal_dir, wal_dir_path) = test_dir("read_write_segment").await;
+            let (wal_dir, wal_dir_path) = test_dir_open("read_write_segment").await;
 
             // FIXME there is and error when buffers for read write have different sizes
             // e.g. 1 << 10 read and 512 << 10 write
@@ -312,7 +189,7 @@ mod tests {
         let ex = LocalExecutor::default();
         ex.run(async move {
             // no wal files in waldir
-            let (wal_dir, _) = test_dir("read_empty_segment").await;
+            let (wal_dir, _) = test_dir_open("read_empty_segment").await;
             let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
@@ -345,7 +222,7 @@ mod tests {
     fn read_write_many_segments() {
         let ex = LocalExecutor::default();
         ex.run(async move {
-            let (wal_dir, wal_dir_path) = test_dir("read_write_many_segments").await;
+            let (wal_dir, wal_dir_path) = test_dir_open("read_write_many_segments").await;
 
             // FIXME there is and error when buffers for read write have different sizes
             // e.g. 1 << 10 read and 512 << 10 write

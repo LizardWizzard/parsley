@@ -5,15 +5,22 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# Solution to share code between tests/benches
+# See other options here https://stackoverflow.com/a/44545091
+[features]
+test_utils = []
+
 [dependencies]
-futures = "*"
-futures-lite = "*"
 glommio = "0.7"
 crc32fast = "1.2.1"
 thiserror = "1.0.25"
 histogram = "0.6.9"
-
+futures = "0.3.21"
 
 [[bench]]
-name = "bench_simple_write"
+name = "simple_write"
+harness = false
+
+[[bench]]
+name = "std_write_page_fsync"
 harness = false
