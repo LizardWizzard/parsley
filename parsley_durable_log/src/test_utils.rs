@@ -31,6 +31,25 @@ pub async fn test_dir_open(subdir_name: impl AsRef<Path>) -> (Directory, PathBuf
     (dir, path)
 }
 
+pub mod bench {
+    use histogram::Histogram;
+
+    pub fn display_histogram(name: &'static str, h: Histogram, parser: impl Fn(u64) -> String) {
+        println!("{name}.min={}", parser(h.minimum().unwrap()));
+        println!("{name}.max={}", parser(h.maximum().unwrap()));
+        println!("{name}.stddev={}", parser(h.stddev().unwrap()));
+        println!("{name}.mean={}", parser(h.mean().unwrap()));
+        for percentile in (0..95).step_by(5) {
+            println!(
+                "{name}.p{}={}",
+                percentile,
+                parser(h.percentile(percentile as f64).unwrap())
+            );
+        }
+        println!("{name}.p{}={}", 99.9, parser(h.percentile(99.9 as f64).unwrap()));
+    }
+}
+
 pub mod kv_record {
     use std::{convert::TryInto, fmt::Display, io::Write, mem};
 
@@ -77,7 +96,6 @@ pub mod kv_record {
             buf.write_all(&checksum_hasher.finalize().to_be_bytes())
                 .unwrap();
             debug_assert_eq!(initial_pos - buf.len(), self.size() as usize);
-            println!("record {:?} serialized", self.key[0]);
         }
 
         fn deserialize_from<'buf>(buf: &'buf [u8]) -> Result<(u64, Self), WalReadError>
