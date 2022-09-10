@@ -4,9 +4,10 @@ use std::{
 
 use super::{RecordMarker, WalWritable};
 use crc32fast::Hasher;
-use glommio::{
-    io::{Directory, DmaFile},
-    GlommioError,
+use glommio::GlommioError;
+use instrument_fs::{
+    adapter::glommio::{InstrumentedDirectory, InstrumentedDmaFile},
+    Instrument,
 };
 use thiserror::Error;
 
@@ -78,15 +79,15 @@ pub struct ReadFinishResult {
 // cannot implement Stream because Stream::Item doesnt have a lifetime
 // and even if it did, we cannot give away references to current buf
 // TODO switch to using DmaStreamReader because it supports readahead
-pub(crate) struct WalSegmentStreamReader<Consumer: WalConsumer> {
-    dma_file: Rc<DmaFile>,
+pub(crate) struct WalSegmentStreamReader<Consumer: WalConsumer, I: Instrument + Clone> {
+    dma_file: Rc<InstrumentedDmaFile<I>>,
     buf_size: u64,
     file_pos: u64,
     consumer: Consumer,
 }
 
-impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
-    pub(crate) fn new(dma_file: DmaFile, buf_size: u64, consumer: Consumer) -> Self {
+impl<Consumer: WalConsumer, I: Instrument + Clone> WalSegmentStreamReader<Consumer, I> {
+    pub(crate) fn new(dma_file: InstrumentedDmaFile<I>, buf_size: u64, consumer: Consumer) -> Self {
         Self {
             dma_file: Rc::new(dma_file),
             buf_size,
@@ -202,14 +203,19 @@ impl<Consumer: WalConsumer> WalSegmentStreamReader<Consumer> {
     }
 }
 
-pub struct WalReader {
+pub struct WalReader<I: Instrument + Clone> {
     buf_size: u64,
-    wal_dir: Directory,
+    wal_dir: InstrumentedDirectory<I>,
+    instrument: I,
 }
 
-impl WalReader {
-    pub fn new(buf_size: u64, wal_dir: Directory) -> Self {
-        Self { buf_size, wal_dir }
+impl<I: Instrument + Clone> WalReader<I> {
+    pub fn new(buf_size: u64, wal_dir: InstrumentedDirectory<I>, instrument: I) -> Self {
+        Self {
+            buf_size,
+            wal_dir,
+            instrument,
+        }
     }
 
     fn get_segment_paths(&self) -> WalReadResult<Vec<(usize, PathBuf)>> {
@@ -250,7 +256,8 @@ impl WalReader {
         let mut stop_pos = 0;
         for (segno, segment_path) in segment_paths.iter() {
             crate::debug_print!("reading {}", segment_path.display());
-            let segment_file = DmaFile::open(&segment_path).await?;
+            let segment_file =
+                InstrumentedDmaFile::open(&segment_path, self.instrument.clone()).await?;
 
             let segment_reader =
                 WalSegmentStreamReader::new(segment_file, self.buf_size, consumer.take().unwrap());

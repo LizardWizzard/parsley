@@ -44,7 +44,6 @@ pub enum RecordMarker {
 
 impl RecordMarker {
     pub fn try_from_u8(v: u8, offset_for_error: u64) -> Result<Self, WalReadError> {
-        println!();
         match v {
             x if x == RecordMarker::Data as u8 => Ok(RecordMarker::Data),
             x if x == RecordMarker::Padding as u8 => Ok(RecordMarker::Padding),
@@ -67,6 +66,7 @@ mod tests {
     };
     use futures::{future::join_all, Future};
     use glommio::LocalExecutor;
+    use instrument_fs::instrument::durability_checker::DurabilityChecker;
     use std::{cell::RefCell, rc::Rc, task::Poll, time::Duration};
 
     #[derive(Default)]
@@ -86,7 +86,7 @@ mod tests {
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
-            println!("consuming key {}", self.record.key[0]);
+            // println!("consuming key {}", self.record.key[0]);
             (&mut *self.data.borrow_mut())
                 .push((self.record.key.to_owned(), self.record.value.to_owned()));
             Poll::Ready(Ok(()))
@@ -106,7 +106,7 @@ mod tests {
     }
 
     // TODO accept writer, key size, value size, number of records to write
-    // fn write_wal() {
+    // fn write_log() {
     //
     // }
 
@@ -114,7 +114,10 @@ mod tests {
     fn read_write_segment() {
         let ex = LocalExecutor::default();
         ex.run(async move {
-            let (wal_dir, wal_dir_path) = test_dir_open("read_write_segment").await;
+            let instrument = DurabilityChecker::default();
+
+            let (wal_dir, wal_dir_path) =
+                test_dir_open("read_write_segment", instrument.clone()).await;
 
             // FIXME there is and error when buffers for read write have different sizes
             // e.g. 1 << 10 read and 512 << 10 write
@@ -161,7 +164,9 @@ mod tests {
             let flushed = wal_segment_writer.flush().await.unwrap();
             assert_eq!(flushed, records);
             jh.await;
-            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
+
+            let wal_reader =
+                WalReader::new(buf_size, wal_dir.try_clone().unwrap(), instrument.clone());
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
                 .await
@@ -188,9 +193,12 @@ mod tests {
         let buf_size = 1 << 10;
         let ex = LocalExecutor::default();
         ex.run(async move {
+            let instrument = DurabilityChecker::default();
             // no wal files in waldir
-            let (wal_dir, _) = test_dir_open("read_empty_segment").await;
-            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
+            let (wal_dir, _) = test_dir_open("read_empty_segment", instrument.clone()).await;
+
+            let wal_reader =
+                WalReader::new(buf_size, wal_dir.try_clone().unwrap(), instrument.clone());
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
                 .await
@@ -201,7 +209,7 @@ mod tests {
             // one empty file in waldir
             wal_dir.create_file("0.wal").await.unwrap();
 
-            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
+            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap(), instrument);
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
                 .await
@@ -222,7 +230,10 @@ mod tests {
     fn read_write_many_segments() {
         let ex = LocalExecutor::default();
         ex.run(async move {
-            let (wal_dir, wal_dir_path) = test_dir_open("read_write_many_segments").await;
+            let instrument = DurabilityChecker::default();
+
+            let (wal_dir, wal_dir_path) =
+                test_dir_open("read_write_many_segments", instrument.clone()).await;
 
             // FIXME there is and error when buffers for read write have different sizes
             // e.g. 1 << 10 read and 512 << 10 write
@@ -271,10 +282,10 @@ mod tests {
             // wait for segment switch to happen and corresponding writes to complete
             glommio::timer::sleep(Duration::from_millis(100)).await;
             let _ = wal_segment_writer.flush().await.unwrap();
-            // assert_eq!(flushed, records);
+
             jh.await;
-            println!("-------------------------------------------------");
-            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap());
+
+            let wal_reader = WalReader::new(buf_size, wal_dir.try_clone().unwrap(), instrument);
             let (read_finish_result, consumer) = wal_reader
                 .pipe_to_consumer(StubConsumer::default())
                 .await

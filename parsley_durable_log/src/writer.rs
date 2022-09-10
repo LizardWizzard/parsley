@@ -12,10 +12,14 @@ use std::{
 
 use super::{RecordMarker, WalWritable};
 use futures::future::{join_all, poll_fn};
-use glommio::{io::Directory, sync::RwLock};
+use glommio::sync::RwLock;
+use glommio::GlommioError;
 use glommio::{io::DmaBuffer, task::JoinHandle};
-use glommio::{io::DmaFile, GlommioError};
 use histogram::Histogram;
+use instrument_fs::{
+    adapter::glommio::{InstrumentedDirectory, InstrumentedDmaFile},
+    Instrument,
+};
 use thiserror::Error;
 
 fn wal_file_name(idx: u64) -> String {
@@ -27,30 +31,15 @@ fn wal_file_name(idx: u64) -> String {
 pub enum WalWriteError {
     #[error("record size exceeded size of one buffer, this is currently not supported")]
     RecordSizeLimitExceeded,
-    // #[error("corrupted segment, unexpected eof at offset {offset}")]
-    // UnexpectedEof { offset: u64 },
 
-    // #[error("corrupted segment, unexpected eof (length decode failed)")]
-    // LengthDecodeFailed(#[from] TryFromSliceError),
-
-    // #[error("segment checksum mismatch. expected {expected:x?} found {actual:x?}")]
-    // ChecksumMismatch { expected: u32, actual: u32 },
-
-    // #[error("unknown record marker {invalid} at offset {offset}")]
-    // InvalidRecordMarker { invalid: u8, offset: u64 },
-
-    // #[error("invalid log file name at: {at}")]
-    // InvalidLogFileName { at: PathBuf },
     #[error("task was closed")]
     TaskClosed,
 
     #[error("flush is already in progress")]
     FlushIsAlreadyInProgress,
 
-    #[error("glommio error")]
+    #[error("glommio error {0}")]
     GlommioError(#[from] GlommioError<()>),
-    // #[error("io error")]
-    // IoError(#[from] io::Error),
 }
 
 pub type WalWriteResult<T> = Result<T, WalWriteError>;
@@ -60,9 +49,9 @@ enum WriteState {
     Ready,
 }
 
-struct WalSegmentWriterState {
+struct WalSegmentWriterState<I: Instrument + Clone> {
     // This is the segment we are currently writing to
-    segment_file: Rc<DmaFile>,
+    segment_file: Rc<InstrumentedDmaFile<I>>,
     // These are wakers for tasks that called write and are waiting for the flush
     // u64 corrensponds to the position in the file which is needed to calculate
     // which writes are durable during flush. Flush operation is issued when
@@ -85,8 +74,12 @@ struct WalSegmentWriterState {
     file_pos: u64,
 }
 
-impl WalSegmentWriterState {
-    pub fn new_from_segment_file(segment_file: Rc<DmaFile>, buf_size: u64, buf_num: usize) -> Self {
+impl<I: Instrument + Clone> WalSegmentWriterState<I> {
+    pub fn new_from_segment_file(
+        segment_file: Rc<InstrumentedDmaFile<I>>,
+        buf_size: u64,
+        buf_num: usize,
+    ) -> Self {
         // TODO check segsize vs buf_size * buf_num
 
         let mut buf_queue = VecDeque::with_capacity(buf_num);
@@ -119,14 +112,14 @@ impl WalSegmentWriterState {
     }
 }
 
-struct WalWriterState {
-    wal_dir: Directory,
+struct WalWriterState<I: Instrument + Clone> {
+    wal_dir: InstrumentedDirectory<I>,
     wal_dir_path: PathBuf,
     buf_size: u64,
     buf_num: usize, // usize because used only to fill Vec with buffers which accepts usize
     segment_size: u64,
     current_segment_idx: u64,
-    current_segment_writer_state: WalSegmentWriterState,
+    current_segment_writer_state: WalSegmentWriterState<I>,
     flush_is_in_progress: bool,
     has_unflushed_records: bool,
     switch_segments_lock: Rc<RwLock<()>>,
@@ -135,15 +128,15 @@ struct WalWriterState {
 }
 
 #[derive(Clone)]
-pub struct WalWriter {
-    state: Rc<RefCell<WalWriterState>>,
+pub struct WalWriter<I: Instrument + Clone + 'static> {
+    state: Rc<RefCell<WalWriterState<I>>>,
 }
 
-impl WalWriter {
+impl<I: Instrument + Clone + 'static> WalWriter<I> {
     pub async fn new(
-        wal_dir: Directory,
+        wal_dir: InstrumentedDirectory<I>,
         wal_dir_path: PathBuf,
-        continue_segment_file: Option<DmaFile>,
+        continue_segment_file: Option<InstrumentedDmaFile<I>>,
         continue_segment_file_idx: Option<u64>,
         buf_size: u64,
         buf_num: usize,
@@ -156,7 +149,13 @@ impl WalWriter {
             None => {
                 // TODO proper segment naming, file name is first lsn
                 // think about .partial extension
-                wal_dir.create_file(wal_file_name(0)).await?
+                let segment_file = wal_dir.create_file(wal_file_name(0)).await?;
+                segment_file.fdatasync().await?;
+                // it is required for durability to sync parent directories after creating new files
+                // TODO is it the correct ordering, detect the wrong one?
+                wal_dir.sync().await?;
+                segment_file.ensure_durable(None);
+                segment_file
             }
         };
 
@@ -193,7 +192,7 @@ impl WalWriter {
         state.flush_duration_histogram.clone()
     }
 
-    fn rotate_buffer(&self, state: &mut RefMut<'_, WalWriterState>, record_size: u64) {
+    fn rotate_buffer(&self, state: &mut RefMut<'_, WalWriterState<I>>, record_size: u64) {
         let left = state.buf_size - state.current_segment_writer_state.buf_pos;
         if left < record_size {
             // rotate buffers
@@ -243,8 +242,7 @@ impl WalWriter {
         }
     }
 
-    // TODO avoid using state, pass needed variables instead?
-    fn should_switch_segments(state: &RefMut<'_, WalWriterState>, record_size: u64) -> bool {
+    fn should_switch_segments(state: &RefMut<'_, WalWriterState<I>>, record_size: u64) -> bool {
         state.current_segment_writer_state.file_pos
             + state.current_segment_writer_state.buf_pos
             + record_size
@@ -338,12 +336,16 @@ impl WalWriter {
 
         let wal_dir_to_fsync = state.wal_dir.try_clone().unwrap(); // why I cant just get the same fd without duplication?
 
+        let instrument = state.wal_dir.instrument.clone();
         drop(state);
         self.flush().await?;
         // TODO can we batch these calls?
         current_segment_file.close_rc().await?;
-        let new_segment_file = DmaFile::create(&new_segment_path).await?;
+        let new_segment_file = InstrumentedDmaFile::create(&new_segment_path, instrument).await?;
+        new_segment_file.fdatasync().await?;
         wal_dir_to_fsync.sync().await?;
+        // Running sync on directory is required for durability of newly created file directory entry 
+        new_segment_file.ensure_durable(None);
 
         let mut state = self.state.borrow_mut();
         state.current_segment_idx = current_segment_idx;
@@ -446,7 +448,7 @@ impl WalWriter {
         self.rotate_buffer(&mut state, 1);
         state.current_segment_writer_state.write_shutdown();
         // clone it so the mutable reference to state is not held across await point
-        let dma_file = state.current_segment_writer_state.segment_file.clone();
+        let dma_file = Rc::clone(&state.current_segment_writer_state.segment_file);
 
         // TODO ensure there is no pending writes, so clone is not needed, probably take &mut self?
         //  set some shutdown flag (check it in write and return shutdown error if it is set)
@@ -549,6 +551,7 @@ impl WalWriter {
 
         // ensure that all previous writes are durable
         dma_file.fdatasync().await?;
+        dma_file.ensure_durable(Some(flush_file_pos));
         let mut state = self.state.borrow_mut();
         // wake every write that has file position less than flush position
         let mut ctr = 0;

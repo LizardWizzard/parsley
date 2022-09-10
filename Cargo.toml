@@ -11,7 +11,7 @@ members = [
     "core",
     "rangetree",
     "pmem_storage",
-    "durability_checker",
+    "instrument_fs",
 ]
 
 [dependencies]

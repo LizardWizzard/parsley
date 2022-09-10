@@ -215,13 +215,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "durability_checker"
-version = "0.1.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
 name = "enclose"
 version = "1.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -464,6 +457,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "instrument_fs"
+version = "0.1.0"
+dependencies = [
+ "futures-lite",
+ "glommio",
+ "thiserror",
+]
+
+[[package]]
 name = "intrusive-collections"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,6 +659,7 @@ dependencies = [
  "futures",
  "glommio",
  "histogram",
+ "instrument_fs",
  "pico-args",
  "thiserror",
 ]

@@ -19,4 +19,5 @@ thiserror = "1.0.25"
 histogram = "0.6.9"
 futures = "0.3.21"
 pico-args = { version = "0.5.0", optional = true }
-
+# TODO make it optional, clean up with other features
+instrument_fs = { path = "../instrument_fs", features = ["glommio"] }

@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use glommio::io::Directory;
+use instrument_fs::{adapter::glommio::InstrumentedDirectory, Event, Instrument};
 
 pub fn test_dir(subdir_name: impl AsRef<Path>) -> PathBuf {
     let mut path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
@@ -22,12 +22,22 @@ pub fn test_dir(subdir_name: impl AsRef<Path>) -> PathBuf {
     path
 }
 
-pub async fn test_dir_open(subdir_name: impl AsRef<Path>) -> (Directory, PathBuf) {
+pub async fn test_dir_open<P: AsRef<Path>, I: Instrument + Clone>(
+    subdir_name: P,
+    instrument: I,
+) -> (InstrumentedDirectory<I>, PathBuf) {
     let path = test_dir(subdir_name);
-    let dir = Directory::open(&path)
+
+    instrument
+        .apply_event(Event::AddTrustedDir(path.clone()))
+        .unwrap();
+
+    let dir = InstrumentedDirectory::open(&path, instrument)
         .await
         .expect("failed to create wal dir for test directory");
+
     dir.sync().await.expect("failed to sync wal dir");
+
     (dir, path)
 }
 
@@ -46,7 +56,11 @@ pub mod bench {
                 parser(h.percentile(percentile as f64).unwrap())
             );
         }
-        println!("{name}.p{}={}", 99.9, parser(h.percentile(99.9 as f64).unwrap()));
+        println!(
+            "{name}.p{}={}",
+            99.9,
+            parser(h.percentile(99.9 as f64).unwrap())
+        );
     }
 }
 
