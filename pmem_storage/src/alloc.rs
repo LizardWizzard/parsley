@@ -1,8 +1,7 @@
 use std::{
     alloc::{Layout, LayoutError},
     fs::{self, OpenOptions},
-    io,
-    mem,
+    io, mem,
     path::PathBuf,
     ptr,
 };
@@ -41,7 +40,7 @@ pub struct Slab<const BLOCK_SIZE: usize, const KEY_SIZE: usize, const VALUE_SIZE
 impl<const BLOCK_SIZE: usize, const KEY_SIZE: usize, const VALUE_SIZE: usize>
     Slab<BLOCK_SIZE, KEY_SIZE, VALUE_SIZE>
 where
-    BitsImpl<{ BLOCK_SIZE }>: Bits,
+    BitsImpl<BLOCK_SIZE>: Bits,
 {
     pub fn new(allocation_id: isize, mmap: MmapMut) -> Self {
         let mut instance = Self {
@@ -209,11 +208,13 @@ where
         (self.slabs.len() - 1, 0)
     }
 
-    // there is no layout param because it is fixed to be Slab::key_value_layout()
-    // allocation is performed in two steps, this makes integration with storage simpler, because storage in that case doesn't have to hold it's own state
-    // allocator's state is sufficient to handle requests and perform a restore.
-    // both steps have to be performed atomically without yielding, because first step allocates needed space, and second one makes it durable
-    // if this does not hold two allocations can possibly overwrite each other
+    // There is no layout param because it is fixed to be Slab::key_value_layout()/
+    // Allocation is performed in two steps, this makes integration with storage simpler,
+    // because storage in that case doesn't have to hold it's own state/
+    // Allocator state is sufficient to handle requests and perform a restore.
+    // Both steps have to be performed atomically without yielding, 
+    // because first step allocates needed space, and second one makes it durable.
+    // If this does not hold two allocations can possibly overwrite each other
     pub unsafe fn alloc(&mut self) -> Result<PMemoryBlock, MyAllocError> {
         let (slab_idx, offset) = self.get_free_slab();
         let vptr = self.slabs[slab_idx].vptr_for_offset(offset);
@@ -230,7 +231,7 @@ where
         self.slabs[pptr.ptr.allocation_id as usize].set_bitmap(pptr.ptr.offset as usize, true);
     }
 
-    pub unsafe fn dealloc(&mut self, pptr: PPtr<u8>, layout: Layout) {
+    pub unsafe fn dealloc(&mut self, _pptr: PPtr<u8>, _layoutt: Layout) {
         // NOTE do not forget to decrement self.slab_with_free_slot
         todo!()
     }

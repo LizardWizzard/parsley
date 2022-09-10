@@ -69,8 +69,12 @@ where
     // }
 
     let result = items.binary_search_by(|probe| {
-        // roughly equivalent of  if (probe.start.borrow() <= key) && (key <= probe.end.borrow()) but correct according to SubLenCmp 
-        if matches!(probe.start.borrow().sublen_cmp(key), Ordering::Equal | Ordering::Less) &&  matches!(probe.end.borrow().sublen_cmp(key), Ordering::Greater) {
+        // roughly equivalent of  if (probe.start.borrow() <= key) && (key <= probe.end.borrow()) but correct according to SubLenCmp
+        if matches!(
+            probe.start.borrow().sublen_cmp(key),
+            Ordering::Equal | Ordering::Less
+        ) && matches!(probe.end.borrow().sublen_cmp(key), Ordering::Greater)
+        {
             return Ordering::Equal;
         } else if matches!(probe.end.borrow().sublen_cmp(key), Ordering::Less) {
             return Ordering::Less;
@@ -198,7 +202,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{RangeMap, RangeSpec, ReadonlyRangeMap, rangevec::RangeVec};
+    use crate::{rangevec::RangeVec, RangeMap, RangeSpec, ReadonlyRangeMap};
 
     // use supe::RangeMap;
     // use crate::RangeSpec;

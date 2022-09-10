@@ -1,8 +1,13 @@
-use std::{convert::TryInto, env, ops::Range, time::{Duration, Instant}};
+use std::{
+    convert::TryInto,
+    env,
+    ops::Range,
+    time::{Duration, Instant},
+};
 
 use glommio::timer;
 use histogram::Histogram;
-use rand::{Rng, prelude::ThreadRng};
+use rand::{prelude::ThreadRng, Rng};
 use rangetree::{RangeMap, RangeSpec};
 
 use crate::{datum::Datum, sharding::shard::format_stats};
@@ -180,10 +185,13 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> Ctx<RangeMapType> {
 pub struct ShardBenchExt<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> {
     pub shard: Shard<RangeMapType>,
 }
-impl<RangeMapType> ShardBenchExt<RangeMapType> where
-    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static
+impl<RangeMapType> ShardBenchExt<RangeMapType>
+where
+    RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static,
 {
-    pub fn new(shard: Shard<RangeMapType>) -> Self { Self { shard } }
+    pub fn new(shard: Shard<RangeMapType>) -> Self {
+        Self { shard }
+    }
 
     pub async fn benchmark_load_data(
         &mut self,
@@ -257,14 +265,14 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 .unwrap();
         }
     }
-    
+
     pub async fn benchmark_read_local_remote(&mut self, ctx: &mut Ctx<RangeMapType>) {
         let (local_bounds, remote_bounds) = get_local_remote_bounds(ctx.shard_id);
         let remote_percentage = get_remote_percentage();
-    
+
         // let inprogress_limit = 100;
         // let semaphore = Semaphore::new(inprogress_limit);
-    
+
         for _ in 0..ctx.num_queries {
             let value = ctx.rng.gen_range(Range { start: 0, end: 100 });
             let target_bounds = if value < remote_percentage {
@@ -294,11 +302,11 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 .unwrap();
         }
     }
-    
+
     pub async fn benchmark_write_local_remote(&mut self, ctx: &mut Ctx<RangeMapType>) {
         let (local_bounds, remote_bounds) = get_local_remote_bounds(ctx.shard_id);
         let remote_percentage = get_remote_percentage();
-    
+
         for _ in 0..ctx.num_queries {
             let value = ctx.rng.gen_range(Range { start: 0, end: 100 });
             let target_bounds = if value < remote_percentage {
@@ -323,12 +331,12 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 .unwrap();
         }
     }
-    
+
     pub async fn benchmark_read_write_local_remote(&mut self, ctx: &mut Ctx<RangeMapType>) {
         let (local_bounds, remote_bounds) = get_local_remote_bounds(ctx.shard_id);
         let remote_percentage = get_remote_percentage();
         let write_percentage = get_write_percentage(ctx.shard_id, &ctx.workload);
-    
+
         for _ in 0..ctx.num_queries {
             let local_remote_value = ctx.rng.gen_range(Range { start: 0, end: 100 });
             let target_bounds = if local_remote_value < remote_percentage {
@@ -342,7 +350,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 local_bounds
             };
             let read_write_value = ctx.rng.gen_range(Range { start: 0, end: 100 });
-    
+
             let (first, second, third) = gen_three(&mut ctx.rng, target_bounds.0, target_bounds.1);
             let mut key = vec![255; ctx.key_length];
             key[0] = first;
@@ -359,7 +367,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 .unwrap();
         }
     }
-    
+
     pub async fn benchmark(&mut self) {
         if env::var("BENCHMARK").is_err() {
             return;
@@ -372,7 +380,7 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
                 break;
             }
         }
-    
+
         // fill data
         let mut datums = self.shard.state.borrow().datums.clone();
         let rng = rand::thread_rng();
@@ -381,17 +389,18 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
         let shard_id = self.shard.state.borrow().id;
         assert_eq!(datums.len(), 1);
         let datum = datums.pop().expect("checked");
-    
-        let number_of_keys =
-            self.benchmark_load_data(shard_id, &datum, key_length, value_length).await;
+
+        let number_of_keys = self
+            .benchmark_load_data(shard_id, &datum, key_length, value_length)
+            .await;
         log::info!("using number_of_keys={:}", number_of_keys);
         // wait for others to be ready
         timer::sleep(Duration::from_millis(300)).await;
         let histo = Histogram::new();
-    
+
         let num_queries: usize = env::var("NUM_QUERIES").unwrap().parse().unwrap();
         log::info!("using num queries={:}", num_queries);
-    
+
         let t0 = Instant::now();
         let workload = Workload::from_env();
         let mut ctx = Ctx::new(
@@ -417,14 +426,13 @@ impl<RangeMapType> ShardBenchExt<RangeMapType> where
         }
         println!(
             "{:}",
-            format_stats(&self.shard.state.borrow().stats, shard_id, t0.elapsed(), ctx),
+            format_stats(
+                &self.shard.state.borrow().stats,
+                shard_id,
+                t0.elapsed(),
+                ctx
+            ),
         );
         timer::sleep(Duration::from_secs(2)).await;
     }
 }
-
-
-
-
-
-

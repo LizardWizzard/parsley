@@ -1,8 +1,6 @@
 use core::arch::x86_64 as arch;
 use std::mem;
 
-
-
 pub unsafe fn persist(p: *const u8) {
     arch::_mm_sfence();
     arch::_mm_clflush(p);

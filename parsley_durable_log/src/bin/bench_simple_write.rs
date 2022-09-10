@@ -6,8 +6,9 @@ use std::{
 };
 
 use futures::future::join_all;
-use glommio::{io::Directory, LocalExecutor};
+use glommio::LocalExecutor;
 use histogram::Histogram;
+use instrument_fs::{adapter::glommio::InstrumentedDirectory, Noop};
 use parsley_durable_log::{
     test_utils::{
         bench::display_histogram,
@@ -30,7 +31,7 @@ fn get_record<'a>(key: &'a mut [u8], value: &'a [u8], record_no: u64) -> KVWalRe
 }
 
 async fn writer(
-    wal_writer: WalWriter,
+    wal_writer: WalWriter<Noop>,
     writer_id: u64,
     num_records: u64,
     key_size: u64,
@@ -47,7 +48,7 @@ async fn writer(
 }
 
 async fn flusher(
-    wal_writer: WalWriter,
+    wal_writer: WalWriter<Noop>,
     flush_interval: Duration,
     should_stop: Rc<RefCell<bool>>,
 ) -> Histogram {
@@ -167,7 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let ex = LocalExecutor::default();
     ex.run(async move {
-        let target_dir = Directory::open(&target_dir_path)
+        let target_dir = InstrumentedDirectory::open(&target_dir_path, Noop {})
             .await
             .expect("failed to create wal dir for test directory");
         target_dir.sync().await.expect("failed to sync wal dir");

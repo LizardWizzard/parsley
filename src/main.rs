@@ -1,17 +1,13 @@
-use core::{
-    sharding::{
-        shard::{Placement, ShardDatum},
-        builder::ShardBuilder,
-    }
+use core::sharding::{
+    builder::ShardBuilder,
+    shard::{Placement, ShardDatum},
 };
 use log::LevelFilter;
 use rangetree::rangevec::RangeVec;
 use std::io::Result;
 
 fn main() -> Result<()> {
-    env_logger::builder()
-        .filter_level(LevelFilter::Info)
-        .init();
+    env_logger::builder().filter_level(LevelFilter::Info).init();
     log::info!("Starting db");
 
     let shard_builder: ShardBuilder<RangeVec<Vec<u8>, ShardDatum>> =

@@ -10,7 +10,7 @@ use parsley_durable_log::test_utils::{self, bench::display_histogram};
 
 const BUF_SIZE: usize = 8192;
 const FILE_SIZE: usize = 1 << 30; // 1GB
-// const FILE_SIZE: usize = 10 << 20; // 10MB
+                                  // const FILE_SIZE: usize = 10 << 20; // 10MB
 
 fn main() -> Result<(), glommio::GlommioError<()>> {
     let path = test_utils::test_dir("bench_glommio_write_page_fsync");

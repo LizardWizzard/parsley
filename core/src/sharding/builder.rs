@@ -1,13 +1,11 @@
 use futures::{future::join_all, join};
 use glommio::channels::shared_channel::SharedReceiver;
-use glommio::{LocalExecutorBuilder, ExecutorJoinHandle};
+use glommio::{ExecutorJoinHandle, LocalExecutorBuilder};
 use rangetree::RangeMap;
 use std::rc::Rc;
 use std::{marker::PhantomData, vec};
 
-use glommio::{
-    channels::shared_channel::{self, SharedSender},
-};
+use glommio::channels::shared_channel::{self, SharedSender};
 
 use super::{
     enums::{Data, Message},
@@ -122,7 +120,11 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardBuilder<RangeMa
                         // let storage = Rc::new(RefCell::new(DatumStorage::MemoryStorage(MemoryStorage::new())));
                         let shard = Shard::<RangeMapType>::new(
                             id,
-                            connected_senders.into_iter().map(Option::unwrap).map(Rc::new).collect(),
+                            connected_senders
+                                .into_iter()
+                                .map(Option::unwrap)
+                                .map(Rc::new)
+                                .collect(),
                         );
 
                         shard

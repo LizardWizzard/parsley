@@ -16,9 +16,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ForwardedGet<RangeMa
     }
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Future
-    for ForwardedGet<RangeMapType>
-{
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Future for ForwardedGet<RangeMapType> {
     type Output = Option<Vec<u8>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -54,9 +52,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> ForwardedSet<RangeMapType> {
     }
 }
 
-impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> Future
-    for ForwardedSet<RangeMapType>
-{
+impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> Future for ForwardedSet<RangeMapType> {
     type Output = ();
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {

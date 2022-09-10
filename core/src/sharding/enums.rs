@@ -4,7 +4,6 @@ use rangetree::RangeMap;
 
 use super::shard::ShardDatum;
 
-
 #[derive(Debug, PartialEq)]
 pub struct Message<T: Send> {
     pub source_id: usize,

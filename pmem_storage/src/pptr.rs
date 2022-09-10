@@ -1,4 +1,4 @@
-use std::{ptr, mem};
+use std::{mem, ptr};
 // Represents persistent part of a persistent pointer
 // PPtr is divided to exclude saving calculated ptr in persistent part
 #[derive(Debug, Copy, Clone)]
@@ -6,13 +6,16 @@ pub struct PPtrPersistent {
     pub allocation_id: u32,
     pub offset: u32,
     // for now dummylocator is used which has one allocation
-                            //   TODO offset and allocation id can fit inside one u64, also alignment to cacheline can be made
-                              // offset: usize,
+    //   TODO offset and allocation id can fit inside one u64, also alignment to cacheline can be made
+    // offset: usize,
 }
 
 impl PPtrPersistent {
     pub fn dangling() -> Self {
-        return Self { allocation_id: 0, offset: 0 };
+        return Self {
+            allocation_id: 0,
+            offset: 0,
+        };
     }
 
     pub fn is_dangling(self) -> bool {
@@ -45,7 +48,10 @@ impl<T> PPtr<T> {
         // it is needed because later we assume for such a thing when thinking about atomicity
         debug_assert_eq!(mem::size_of::<Self>(), 16); // can it be compile time assert?
         PPtr {
-            ptr: PPtrPersistent { allocation_id, offset },
+            ptr: PPtrPersistent {
+                allocation_id,
+                offset,
+            },
             vptr: vptr as *const T,
         }
     }

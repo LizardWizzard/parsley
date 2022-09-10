@@ -40,14 +40,14 @@
 //         }
 //     }
 
-    // TODO make async, setup master ex ecutor first, then setup child shard executors
-    // when master sets up all needed stuff it itself transfers to init_shard routine,
-    // since master executor is the same shard as others
-    // now this panics because when issuing connect there is no running executor in current thread
-    // pub fn run(&mut self) {
-    //     // first core is master core with db instance
-    //     // we need to initialize master executor and from it start child ones,
-    //     // because when creating channels they have to be binded to executor
+// TODO make async, setup master ex ecutor first, then setup child shard executors
+// when master sets up all needed stuff it itself transfers to init_shard routine,
+// since master executor is the same shard as others
+// now this panics because when issuing connect there is no running executor in current thread
+// pub fn run(&mut self) {
+//     // first core is master core with db instance
+//     // we need to initialize master executor and from it start child ones,
+//     // because when creating channels they have to be binded to executor
 // }
 
 // by key find shard (optionally datum) for that key
