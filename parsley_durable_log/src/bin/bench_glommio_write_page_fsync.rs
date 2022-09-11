@@ -9,14 +9,17 @@ use histogram::Histogram;
 use parsley_durable_log::test_utils::{self, bench::display_histogram};
 
 const BUF_SIZE: usize = 8192;
-const FILE_SIZE: usize = 1 << 30; // 1GB
-                                  // const FILE_SIZE: usize = 10 << 20; // 10MB
+// const FILE_SIZE: usize = 1 << 30; // 1GB
+const FILE_SIZE: usize = 10 << 26; // 64MB
 
 fn main() -> Result<(), glommio::GlommioError<()>> {
     let path = test_utils::test_dir("bench_glommio_write_page_fsync");
+    println!("test_dir={}", path.display());
 
     let concurrent = std::env::var("CONCURRENT").is_ok();
     println!("concurrent={}", concurrent);
+    let pre_allocate = std::env::var("PRE_ALLOCATE").is_ok();
+    println!("pre_allocate={}", pre_allocate);
 
     let ex = LocalExecutor::default();
     ex.run(async move {
@@ -25,7 +28,10 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
             .expect("failed to create wal dir for test directory");
         target_dir.sync().await.expect("failed to sync wal dir");
         let file = Rc::new(target_dir.create_file("test").await?);
-        file.pre_allocate(FILE_SIZE as u64).await?;
+        if pre_allocate {
+            file.pre_allocate(FILE_SIZE as u64).await?;
+        }
+        // file
         // file
         // 1G / buf size
         let iterations = FILE_SIZE / BUF_SIZE;
@@ -35,8 +41,9 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
         }
 
         let t0 = Instant::now();
-        let mut write_with_buf_alloc = Histogram::new();
-        let mut write_without_buf_alloc = Histogram::new();
+        let mut total = Histogram::new();
+        let mut write = Histogram::new();
+        let mut sync = Histogram::new();
 
         for iteration in 0..iterations {
             let write_t0 = Instant::now();
@@ -44,7 +51,6 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
             let buf_mut = buf.as_bytes_mut();
             buf_mut.copy_from_slice(&reference_buf);
 
-            let write_t1 = Instant::now();
             buf_mut[..8].copy_from_slice(&iteration.to_le_bytes());
             if concurrent {
                 let file_write = Rc::clone(&file);
@@ -59,22 +65,29 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
                     glommio::spawn_local(async move { file_sync.fdatasync().await.unwrap() });
                 join!(jh_write, jh_sync);
             } else {
+                let raw_write_t0 = Instant::now();
                 file.write_at(buf, (iteration * BUF_SIZE) as u64).await?;
+                write
+                    .increment(raw_write_t0.elapsed().as_micros().try_into().unwrap())
+                    .unwrap();
+                let raw_sync_t0 = Instant::now();
                 file.fdatasync().await?;
+                sync.increment(raw_sync_t0.elapsed().as_micros().try_into().unwrap())
+                    .unwrap();
             }
 
-            write_with_buf_alloc
+            total
                 .increment(write_t0.elapsed().as_micros().try_into().unwrap())
-                .unwrap();
-            write_without_buf_alloc
-                .increment(write_t1.elapsed().as_micros().try_into().unwrap())
                 .unwrap();
         }
         println!("elapsed={:?}", t0.elapsed());
-        display_histogram("write_without_buf_alloc", write_without_buf_alloc, |v| {
+        display_histogram("total", total, |v| {
             format!("{:?}", Duration::from_micros(v))
         });
-        display_histogram("write_with_buf_alloc", write_with_buf_alloc, |v| {
+        display_histogram("write", write, |v| {
+            format!("{:?}", Duration::from_micros(v))
+        });
+        display_histogram("sync", sync, |v| {
             format!("{:?}", Duration::from_micros(v))
         });
         Ok::<(), GlommioError<()>>(())

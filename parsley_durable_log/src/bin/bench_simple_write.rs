@@ -1,15 +1,20 @@
+#![feature(generic_associated_types)]
 use std::{
     cell::RefCell,
+    collections::{hash_map::Entry, HashMap},
+    convert::TryInto,
     error::Error,
     rc::Rc,
+    task::Poll,
     time::{Duration, Instant},
 };
 
-use futures::future::join_all;
+use futures::{future::join_all, Future};
 use glommio::LocalExecutor;
 use histogram::Histogram;
 use instrument_fs::{adapter::glommio::InstrumentedDirectory, Noop};
 use parsley_durable_log::{
+    reader::{WalConsumer, WalReadResult, WalReader},
     test_utils::{
         bench::display_histogram,
         kv_record::{KVWalRecord, CHECKSUM_SIZE, RECORD_HEADER_SIZE},
@@ -107,18 +112,38 @@ impl Args {
         //     print!("{}", HELP);
         //     std::process::exit(0);
         // }
-        let args = Args {
-            buf_size_bytes: pargs.value_from_str("--buf-size-bytes")?,
-            buf_queue_size: pargs.value_from_str("--buf-queue-size")?,
-            segment_size_bytes: pargs.value_from_str("--segment-size-bytes")?,
-            num_writers: pargs.value_from_str("--num-writers")?,
-            key_size_bytes: pargs.value_from_str("--key-size-bytes")?,
-            value_size_bytes: pargs.value_from_str("--value-size-bytes")?,
-            flush_interval_micros: Duration::from_micros(
-                pargs.value_from_str("--flush-interval-micros")?,
-            ),
-            target_write_size_bytes: pargs.value_from_str("--target-write-size-bytes")?,
-        };
+        let mut args = Args::default();
+        if let Some(v) = pargs.opt_value_from_str("--buf-size-bytes")? {
+            args.buf_size_bytes = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--buf-queue-size")? {
+            args.buf_queue_size = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--segment-size-bytes")? {
+            args.segment_size_bytes = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--num-writers")? {
+            args.num_writers = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--key-size-bytes")? {
+            args.key_size_bytes = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--value-size-bytes")? {
+            args.value_size_bytes = v;
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--flush-interval-micros")? {
+            args.flush_interval_micros = Duration::from_micros(v);
+        }
+
+        if let Some(v) = pargs.opt_value_from_str("--target-write-size-bytes")? {
+            args.target_write_size_bytes = v;
+        }
 
         // It's up to the caller what to do with the remaining arguments.
         let remaining = pargs.finish();
@@ -145,6 +170,56 @@ impl Default for Args {
     }
 }
 
+struct ValidateConsumerFut<'a> {
+    data: Rc<RefCell<HashMap<u64, u64>>>,
+    record: KVWalRecord<'a>,
+}
+
+impl<'a> Future for ValidateConsumerFut<'a> {
+    type Output = WalReadResult<()>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let writer_id = u64::from_le_bytes(self.record.value[..8].try_into().unwrap());
+        let record_no = u64::from_le_bytes(self.record.key[..8].try_into().unwrap());
+
+        match self.data.borrow_mut().entry(writer_id) {
+            Entry::Occupied(mut o) => {
+                let last_seen = o.get_mut();
+                *last_seen += 1;
+                // check that record ids for writers are strictly in order
+                assert_eq!(*last_seen, record_no);
+            }
+            Entry::Vacant(v) => {
+                assert_eq!(record_no, 0); // we got first record
+                v.insert(record_no);
+            }
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[derive(Default)]
+struct ValidateConsumer {
+    pub data: Rc<RefCell<HashMap<u64, u64>>>, // writer_id -> max_seen_record_no
+}
+
+impl WalConsumer for ValidateConsumer {
+    type Record<'a> = KVWalRecord<'a>;
+
+    type ConsumeFut<'a> = ValidateConsumerFut<'a>;
+
+    fn consume<'a>(&self, record: Self::Record<'a>) -> Self::ConsumeFut<'a> {
+        ValidateConsumerFut {
+            data: Rc::clone(&self.data),
+            record,
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse()?;
 
@@ -164,11 +239,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.buf_size_bytes / record_size
     );
 
+    eprintln!(
+        "records per writer {}",
+        num_records_per_writer
+    );
+
     let target_dir_path = test_dir("bench_simple_write");
 
     let ex = LocalExecutor::default();
     ex.run(async move {
-        let target_dir = InstrumentedDirectory::open(&target_dir_path, Noop {})
+        let target_dir = InstrumentedDirectory::open(&target_dir_path, Noop)
             .await
             .expect("failed to create wal dir for test directory");
         target_dir.sync().await.expect("failed to sync wal dir");
@@ -236,6 +316,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         eprintln!("Flush records histo:");
         display_histogram("flush_records", flush_records_histo, |v| v.to_string());
+
+        eprintln!("Validating...");
+        let reader = WalReader::new(args.buf_size_bytes, target_dir, Noop);
+        let (read_finish_result, consumer) = reader
+            .pipe_to_consumer(ValidateConsumer::default())
+            .await
+            .unwrap();
+
+        let _ = read_finish_result.expect("read failed");
+
+        for writer_id in 0..args.num_writers {
+            let last_seen = consumer.data.borrow()[&writer_id];
+            assert_eq!(last_seen, num_records_per_writer - 1) // record_id starts from 0
+        }
+        eprintln!("Ok")
     });
     Ok(())
 }

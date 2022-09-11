@@ -239,7 +239,6 @@ impl<I: Instrument + Clone> WalReader<I> {
         }
         segment_files.sort_by_key(|(segno, _)| *segno);
 
-        dbg!(&segment_files);
         Ok(segment_files)
     }
 
