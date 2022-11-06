@@ -111,7 +111,7 @@ where
         );
     }
 
-    pub fn delete(&mut self, key: &[u8]) -> Option<()> {
+    pub fn delete(&mut self, _key: &[u8]) -> Option<()> {
         // NOTE: do not forget to pass to dealloc pptr to key value pair, however it wil be ok even without conversion
         // because persistent part of pointer is the same
         todo!()
