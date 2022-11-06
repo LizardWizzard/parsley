@@ -12,6 +12,7 @@ members = [
     "rangetree",
     "pmem_storage",
     "instrument_fs",
+    "bench_runner",
 ]
 
 [dependencies]
