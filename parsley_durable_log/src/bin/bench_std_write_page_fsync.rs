@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{self, Write},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use histogram::Histogram;
@@ -40,7 +40,7 @@ fn main() -> io::Result<()> {
             .unwrap();
     }
     println!("elapsed={:?}", t0.elapsed());
-    display_histogram("write", h, |v| format!("{:?}", Duration::from_micros(v)));
+    display_histogram("write", h, true);
 
     Ok(())
 }

@@ -44,22 +44,24 @@ pub async fn test_dir_open<P: AsRef<Path>, I: Instrument + Clone>(
 pub mod bench {
     use histogram::Histogram;
 
-    pub fn display_histogram(name: &'static str, h: Histogram, parser: impl Fn(u64) -> String) {
-        println!("{name}.min={}", parser(h.minimum().unwrap()));
-        println!("{name}.max={}", parser(h.maximum().unwrap()));
-        println!("{name}.stddev={}", parser(h.stddev().unwrap()));
-        println!("{name}.mean={}", parser(h.mean().unwrap()));
-        for percentile in (0..95).step_by(5) {
+    pub fn display_histogram(name: &'static str, h: Histogram, is_duration: bool) {
+        let dur = if is_duration { ":dur" } else { "" };
+
+        println!("{name}.min{dur}={}", h.minimum().unwrap().to_string());
+        println!("{name}.max{dur}={}", h.maximum().unwrap().to_string());
+        println!("{name}.stddev{dur}={}", h.stddev().unwrap().to_string());
+        println!("{name}.mean{dur}={}", h.mean().unwrap().to_string());
+        for percentile in (10..90).step_by(10).chain([95, 99].into_iter()) {
             println!(
-                "{name}.p{}={}",
+                "{name}.p{}{dur}={}",
                 percentile,
-                parser(h.percentile(percentile as f64).unwrap())
+                h.percentile(percentile as f64).unwrap().to_string()
             );
         }
         println!(
-            "{name}.p{}={}",
+            "{name}.p{}{dur}={}",
             99.9,
-            parser(h.percentile(99.9 as f64).unwrap())
+            h.percentile(99.9 as f64).unwrap().to_string()
         );
     }
 }

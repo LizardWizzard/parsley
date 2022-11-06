@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)] // for usage of generic lifetime parameters on associated Future types
 #![feature(drain_filter)]
 
 pub mod reader;

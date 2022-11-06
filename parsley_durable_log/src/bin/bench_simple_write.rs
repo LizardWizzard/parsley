@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)]
 use std::{
     cell::RefCell,
     collections::{hash_map::Entry, HashMap},
@@ -69,7 +68,7 @@ async fn flusher(
             }
             Err(e) => match e {
                 WalWriteError::FlushIsAlreadyInProgress => {
-                    println!("got flush already in progress, continueing");
+                    eprintln!("got flush already in progress, continueing");
                     continue;
                 }
                 other_error => panic!("failed to flush log: {}", other_error),
@@ -158,14 +157,14 @@ impl Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            buf_size_bytes: 200 << 10,
+            buf_size_bytes: 128 << 10,
             buf_queue_size: 3,
-            segment_size_bytes: 1 << 30, // 1G
+            segment_size_bytes: 10 << 30, // 10G
             num_writers: 1024,
             key_size_bytes: 100,
             value_size_bytes: 100,
             flush_interval_micros: Duration::from_micros(50),
-            target_write_size_bytes: 1 << 30, // 1G
+            target_write_size_bytes: 10 << 30, // 10G
         }
     }
 }
@@ -239,10 +238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.buf_size_bytes / record_size
     );
 
-    eprintln!(
-        "records per writer {}",
-        num_records_per_writer
-    );
+    eprintln!("records per writer {}", num_records_per_writer);
 
     let target_dir_path = test_dir("bench_simple_write");
 
@@ -304,18 +300,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let h = wal_writer.write_distribution_histogram();
         eprintln!("Write duration histo:");
-        display_histogram("write_duration", h, |v| {
-            format!("{:?}", Duration::from_micros(v))
-        });
+        display_histogram("write_duration", h, true);
 
         let h = wal_writer.flush_duration_histogram();
         eprintln!("Flush duration histo:");
-        display_histogram("flush_duration", h, |v| {
-            format!("{:?}", Duration::from_micros(v))
-        });
+        display_histogram("flush_duration", h, true);
 
         eprintln!("Flush records histo:");
-        display_histogram("flush_records", flush_records_histo, |v| v.to_string());
+        display_histogram("flush_records", flush_records_histo, false);
 
         eprintln!("Validating...");
         let reader = WalReader::new(args.buf_size_bytes, target_dir, Noop);

@@ -1,7 +1,4 @@
-use std::{
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::{rc::Rc, time::Instant};
 
 use futures::join;
 use glommio::{io::Directory, GlommioError, LocalExecutor};
@@ -81,15 +78,9 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
                 .unwrap();
         }
         println!("elapsed={:?}", t0.elapsed());
-        display_histogram("total", total, |v| {
-            format!("{:?}", Duration::from_micros(v))
-        });
-        display_histogram("write", write, |v| {
-            format!("{:?}", Duration::from_micros(v))
-        });
-        display_histogram("sync", sync, |v| {
-            format!("{:?}", Duration::from_micros(v))
-        });
+        display_histogram("total", total, true);
+        display_histogram("write", write, true);
+        display_histogram("sync", sync, true);
         Ok::<(), GlommioError<()>>(())
     })?;
 
