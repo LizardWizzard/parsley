@@ -344,7 +344,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         let new_segment_file = InstrumentedDmaFile::create(&new_segment_path, instrument).await?;
         new_segment_file.fdatasync().await?;
         wal_dir_to_fsync.sync().await?;
-        // Running sync on directory is required for durability of newly created file directory entry 
+        // Running sync on directory is required for durability of newly created file directory entry
         new_segment_file.ensure_durable(None);
 
         let mut state = self.state.borrow_mut();
