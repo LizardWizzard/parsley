@@ -150,6 +150,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
                 // TODO proper segment naming, file name is first lsn
                 // think about .partial extension
                 let segment_file = wal_dir.create_file(wal_file_name(0)).await?;
+                segment_file.pre_allocate(segment_size).await?;
                 segment_file.fdatasync().await?;
                 // it is required for durability to sync parent directories after creating new files
                 // TODO is it the correct ordering, detect the wrong one?
@@ -250,13 +251,15 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
     }
 
     async fn switch_segments(&self, record_size: u64) -> WalWriteResult<()> {
-        let state = self.state.borrow_mut();
-        if !Self::should_switch_segments(&state, record_size) {
-            return Ok(());
-        }
+        let lock = {
+            let state = self.state.borrow_mut();
+            if !Self::should_switch_segments(&state, record_size) {
+                return Ok(());
+            }
 
-        let lock = Rc::clone(&state.switch_segments_lock);
-        drop(state);
+            Rc::clone(&state.switch_segments_lock)
+        };
+
         // What a dance with Rc and drop...
         crate::debug_print!("acquiring switch segments lock");
         // just a way to wait for already running flush to complete
@@ -337,11 +340,16 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         let wal_dir_to_fsync = state.wal_dir.try_clone().unwrap(); // why I cant just get the same fd without duplication?
 
         let instrument = state.wal_dir.instrument.clone();
+        let segment_size = state.segment_size;
         drop(state);
         self.flush().await?;
         // TODO can we batch these calls?
         current_segment_file.close_rc().await?;
+        // TODO create struct called SegmentFile
         let new_segment_file = InstrumentedDmaFile::create(&new_segment_path, instrument).await?;
+        // use pre-allocate to reduce pressure on the fs to avoid requesting to allocate blocks on-demand
+        new_segment_file.pre_allocate(segment_size).await?;
+
         new_segment_file.fdatasync().await?;
         wal_dir_to_fsync.sync().await?;
         // Running sync on directory is required for durability of newly created file directory entry
