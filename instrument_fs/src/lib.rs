@@ -59,7 +59,6 @@ pub enum Event {
     // clears pending changes
     Fsync(i32),
     // clears pending changes without advancing synced length
-    // TODO add verify rules
     Fdatasync(i32),
     // removees file from tracking
     Delete(PathBuf),

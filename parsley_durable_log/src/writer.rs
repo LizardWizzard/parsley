@@ -262,6 +262,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
 
         // What a dance with Rc and drop...
         crate::debug_print!("acquiring switch segments lock");
+        // TODO Histogram for wait time around waiting for flush to complete
         // just a way to wait for already running flush to complete
         let _guard = lock.write().await.unwrap();
         crate::debug_print!("switch segments lock acquired");
