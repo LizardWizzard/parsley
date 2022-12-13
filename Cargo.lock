@@ -287,18 +287,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1056f553da426e9c025a662efa48b52e62e0a3a7648aa2d15aeaaf7f0d329357"
 
 [[package]]
-name = "enum_dispatch"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0eb359f1476bf611266ac1f5355bc14aeca37b299d0ebccc038ee7058891c9cb"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "env_logger"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -528,6 +516,7 @@ version = "0.1.0"
 dependencies = [
  "futures-lite",
  "glommio",
+ "test_utils",
  "thiserror",
 ]
 
@@ -723,7 +712,6 @@ name = "parsley"
 version = "0.1.0"
 dependencies = [
  "core",
- "enum_dispatch",
  "env_logger",
  "futures",
  "futures-lite",
@@ -741,8 +729,21 @@ dependencies = [
  "glommio",
  "histogram",
  "instrument_fs",
- "pico-args",
+ "test_utils",
  "thiserror",
+]
+
+[[package]]
+name = "parsley_durable_log_bench"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "glommio",
+ "histogram",
+ "instrument_fs",
+ "parsley_durable_log",
+ "pico-args",
+ "test_utils",
 ]
 
 [[package]]
@@ -989,6 +990,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bab24d30b911b2376f3a13cc2cd443142f0c81dda04c118693e35b3835757755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "test_utils"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "histogram",
+ "instrument_fs",
 ]
 
 [[package]]

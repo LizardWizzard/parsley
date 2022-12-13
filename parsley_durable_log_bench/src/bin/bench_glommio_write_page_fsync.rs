@@ -3,7 +3,7 @@ use std::{rc::Rc, time::Instant};
 use futures::join;
 use glommio::{io::Directory, GlommioError, LocalExecutor};
 use histogram::Histogram;
-use parsley_durable_log::test_utils::{self, bench::display_histogram};
+use parsley_durable_log_bench::display_histogram;
 
 const BUF_SIZE: usize = 8192;
 // const FILE_SIZE: usize = 1 << 30; // 1GB

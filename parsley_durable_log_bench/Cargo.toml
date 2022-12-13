@@ -1,23 +1,17 @@
 [package]
-name = "parsley_durable_log"
+name = "parsley_durable_log_bench"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-# Solution to share code between tests/benches
-# See other options here https://stackoverflow.com/a/44545091
-[features]
-test_utils = []
-
 [dependencies]
-crc32fast = "1"
 futures.workspace = true
 glommio.workspace = true
 histogram.workspace = true
-# TODO can it be made optional?
 instrument_fs = { path = "../instrument_fs", features = ["glommio"] }
-thiserror.workspace = true
-
-[dev_dependencies]
+parsley_durable_log = { path = "../parsley_durable_log", features = [
+    "test_utils",
+] }
+pico-args = { version = "0.5" }
 test_utils = { path = "../test_utils" }

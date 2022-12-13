@@ -1,7 +1,7 @@
 alias c := check
 
 check:
-    cargo check --all --tests
+    cargo check --all --tests --benches
 
 alias t := test
 

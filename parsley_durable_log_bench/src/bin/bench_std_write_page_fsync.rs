@@ -5,7 +5,7 @@ use std::{
 };
 
 use histogram::Histogram;
-use parsley_durable_log::test_utils::{self, bench::display_histogram};
+use parsley_durable_log_bench::display_histogram;
 
 const BUF_SIZE: usize = 8192;
 // const FILE_SIZE: usize = 1 << 30; // 1GB

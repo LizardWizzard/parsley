@@ -1,0 +1,12 @@
+[package]
+name = "test_utils"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+instrument_fs = { path = "../instrument_fs" }
+crc32fast = "1.2.1"
+# parsley_durable_log = { path = "../parsley_durable_log" }
+histogram = "0.6.9"

@@ -212,7 +212,7 @@ where
     // Allocation is performed in two steps, this makes integration with storage simpler,
     // because storage in that case doesn't have to hold it's own state/
     // Allocator state is sufficient to handle requests and perform a restore.
-    // Both steps have to be performed atomically without yielding, 
+    // Both steps have to be performed atomically without yielding,
     // because first step allocates needed space, and second one makes it durable.
     // If this does not hold two allocations can possibly overwrite each other
     pub unsafe fn alloc(&mut self) -> Result<PMemoryBlock, MyAllocError> {

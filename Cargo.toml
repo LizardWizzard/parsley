@@ -7,23 +7,35 @@ version = "0.1.0"
 [workspace]
 members = [
     ".",
-    "parsley_durable_log",
-    "core",
-    "rangetree",
-    "pmem_storage",
-    "instrument_fs",
     "bench_runner",
+    "core",
+    "instrument_fs",
+    "parsley_durable_log_bench",
+    "parsley_durable_log",
+    "pmem_storage",
+    "rangetree",
 ]
 
 [dependencies]
-futures = "*"
-futures-lite = "*"                 # TODO REMOVE
-enum_dispatch = "*"
 core = { path = "core" }
-rangetree = { path = "rangetree" }
-log = "*"
 env_logger = "*"
+futures-lite.workspace = true
+futures.workspace = true
+glommio.workspace = true
+log = "*"
+rangetree = { path = "rangetree" }
+
+[workspace.dependencies]
+futures = "0.3"
+# TODO rule out the duplication
+futures-lite = "1.12"
+# TODO update, there are breaking changes (pre_allocate has new flag)
+# glommio = { git = "https://github.com/DataDog/glommio.git", rev = "d6da35914c1869048c98b4e09a002fe340cc6e9b" }
 glommio = "0.7"
+histogram = "0.6.9"
+pico-args = "0.5"
+thiserror = "1"
+
 
 [profile.release]
 debug = true

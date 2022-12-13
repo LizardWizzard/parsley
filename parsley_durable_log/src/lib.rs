@@ -1,7 +1,7 @@
 #![feature(drain_filter)]
 
 pub mod reader;
-#[cfg(feature = "test_utils")]
+#[cfg(any(feature = "test_utils", test))]
 pub mod test_utils;
 pub mod writer;
 
@@ -58,15 +58,12 @@ impl RecordMarker {
 #[cfg(test)]
 mod tests {
     use super::reader::{WalConsumer, WalReadResult};
-    use crate::{
-        reader::WalReader,
-        test_utils::{kv_record::KVWalRecord, test_dir_open},
-        writer::WalWriter,
-    };
+    use crate::{reader::WalReader, test_utils::kv_record::KVWalRecord, writer::WalWriter};
     use futures::{future::join_all, Future};
     use glommio::LocalExecutor;
     use instrument_fs::instrument::durability_checker::DurabilityChecker;
     use std::{cell::RefCell, rc::Rc, task::Poll, time::Duration};
+    use test_utils::test_dir_open;
 
     #[derive(Default)]
     struct StubConsumer {

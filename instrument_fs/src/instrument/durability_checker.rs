@@ -85,7 +85,7 @@ impl Display for PendingChanges {
     }
 }
 
-// TODO error registry, give error code, 
+// TODO error registry, give error code,
 // and provide explanation for each error so user can understand what went wrong
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum DurabilityViolationError {
@@ -157,8 +157,10 @@ impl FileState {
                 }),
             ))
         } else if !self.synced_after_creation {
-            Err(Error::DurabilityViolation(DurabilityViolationError::NotSyncedAfterCreation))
-        } else {    
+            Err(Error::DurabilityViolation(
+                DurabilityViolationError::NotSyncedAfterCreation,
+            ))
+        } else {
             Ok(())
         }
     }

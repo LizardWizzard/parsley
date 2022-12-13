@@ -14,13 +14,11 @@ use histogram::Histogram;
 use instrument_fs::{adapter::glommio::InstrumentedDirectory, Noop};
 use parsley_durable_log::{
     reader::{WalConsumer, WalReadResult, WalReader},
-    test_utils::{
-        bench::display_histogram,
-        kv_record::{KVWalRecord, CHECKSUM_SIZE, RECORD_HEADER_SIZE},
-        test_dir,
-    },
+    test_utils::kv_record::{KVWalRecord, CHECKSUM_SIZE, RECORD_HEADER_SIZE},
     writer::{WalWriteError, WalWriter},
 };
+use parsley_durable_log_bench::display_histogram;
+use test_utils::test_dir;
 
 // TODO test without segment switches, large segment
 // test with segment switches
@@ -68,7 +66,7 @@ async fn flusher(
             }
             Err(e) => match e {
                 WalWriteError::FlushIsAlreadyInProgress => {
-                    eprintln!("got flush already in progress, continueing");
+                    eprintln!("got flush already in progress, continuing");
                     continue;
                 }
                 other_error => panic!("failed to flush log: {}", other_error),
