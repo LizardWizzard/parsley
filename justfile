@@ -11,9 +11,9 @@ test:
 alias b := build
 
 build:
-    cargo build --all --features=parsley_durable_log/bench
+    cargo build --all
 
 alias br := build-release
 
 build-release:
-    cargo build --all --release --features=parsley_durable_log/bench
+    cargo build --all --release
