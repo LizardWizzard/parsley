@@ -293,14 +293,14 @@ pub fn run(args: RunArgs) -> Result<(), io::Error> {
         let iteration_t0 = Instant::now();
 
         print!("Running iteration {}...", run_id);
-        io::stdout().flush().unwrap();
+        io::stdout().flush().expect("stdout flush");
 
         let iteration_result = record_single_run(&key_dir, run_id, &mut command)?;
 
         result.data.push(iteration_result);
 
         println!("{:?}", iteration_t0.elapsed());
-        io::stdout().flush().unwrap();
+        io::stdout().flush().expect("stdout flush");
     }
     println!("Done in {:?}", run_t0.elapsed());
 
