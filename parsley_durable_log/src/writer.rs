@@ -113,7 +113,7 @@ impl<I: Instrument + Clone> WalSegmentWriterState<I> {
 }
 
 struct WalWriterState<I: Instrument + Clone> {
-    wal_dir: InstrumentedDirectory<I>,
+    wal_dir: Rc<InstrumentedDirectory<I>>,
     wal_dir_path: PathBuf,
     buf_size: u64,
     buf_num: usize, // usize because used only to fill Vec with buffers which accepts usize
@@ -164,7 +164,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
             WalSegmentWriterState::new_from_segment_file(Rc::new(segment_file), buf_size, buf_num);
 
         let state = WalWriterState {
-            wal_dir,
+            wal_dir: Rc::new(wal_dir),
             wal_dir_path,
             buf_size,
             buf_num,
@@ -338,7 +338,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
             state.current_segment_writer_state.buf_pos += 1;
         }
 
-        let wal_dir_to_fsync = state.wal_dir.try_clone().unwrap(); // why I cant just get the same fd without duplication?
+        let wal_dir_to_fsync = Rc::clone(&state.wal_dir);
 
         let instrument = state.wal_dir.instrument.clone();
         let segment_size = state.segment_size;
