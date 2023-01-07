@@ -39,7 +39,7 @@ pub enum WalWriteError {
     FlushIsAlreadyInProgress,
 
     #[error("glommio error {0}")]
-    GlommioError(#[from] GlommioError<()>),
+    Glommio(#[from] GlommioError<()>),
 }
 
 pub type WalWriteResult<T> = Result<T, WalWriteError>;
