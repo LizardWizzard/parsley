@@ -29,10 +29,10 @@ pub enum WalReadError {
     InvalidLogFileName { at: PathBuf },
 
     #[error("glommio error")]
-    GlommioError(#[from] GlommioError<()>),
+    Glommio(#[from] GlommioError<()>),
 
     #[error("io error")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
 }
 
 pub type WalReadResult<T> = Result<T, WalReadError>;
