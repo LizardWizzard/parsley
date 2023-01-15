@@ -241,8 +241,7 @@ impl PathState {
     fn apply_fsync(&mut self) {
         match self {
             PathState::File(file_state) => {
-                file_state.max_durable_pos = file_state.max_written_pos;
-                file_state.pending_changes.clear()
+                file_state.apply_fsync();
             }
             PathState::Directory(directory_state) => directory_state.is_synced = true,
         }
