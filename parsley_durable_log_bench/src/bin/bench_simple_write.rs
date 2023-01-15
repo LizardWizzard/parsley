@@ -19,12 +19,7 @@ use parsley_durable_log_bench::display_histogram;
 use parsley_entry::Entry;
 use test_utils::test_dir;
 
-// TODO test without segment switches, large segment
-// test with segment switches
-// TODO validate after write,
 // TODO play with task queues with different priorities, experiment with different latency
-// TODO create multiple executors?
-// TODO accept jobfile and add visualization layer
 
 fn get_record<'a>(key: &'a mut [u8], value: &'a [u8], record_no: u64) -> Entry<'a> {
     key[..8].copy_from_slice(&record_no.to_le_bytes());
