@@ -13,7 +13,7 @@ const KEY_SIZE_LIMIT: u64 = u16::MAX as u64;
 // 64 MiB. Increase if needed, test with such a workload
 const VALUE_SIZE_LIMIT: u64 = 64 << 20;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvalidEntryError {
     #[error("Key size limit exceeded. Value {got} exceeds limit: '{limit}'")]
     KeySizeLimitExceeded { got: u64, limit: u64 },
@@ -152,7 +152,52 @@ impl<'rec> LogWritable<'rec> for Entry<'rec> {
     }
 }
 
+#[cfg(test)]
+mod err_tests {
+    use crate::{Entry, InvalidEntryError, KEY_SIZE_LIMIT, VALUE_SIZE_LIMIT};
+
+    #[test]
+    fn empty_key() {
+        let err = Entry::new(&[], &[]).unwrap_err();
+        assert_eq!(err, InvalidEntryError::EmptyKey)
+    }
+
+    #[test]
+    fn large_key() {
+        let key = vec![0u8; KEY_SIZE_LIMIT as usize + 1];
+        let _ = Entry::new(&key[..KEY_SIZE_LIMIT as usize], &[])
+            .expect("failed to create entry with key size equal to size limit");
+
+        let err = Entry::new(&key, &[])
+            .expect_err("failed to create entry with key size equal to size limit");
+        assert_eq!(
+            err,
+            InvalidEntryError::KeySizeLimitExceeded {
+                got: KEY_SIZE_LIMIT + 1,
+                limit: KEY_SIZE_LIMIT
+            }
+        )
+    }
+
+    #[test]
+    fn large_value() {
+        let value = vec![0u8; VALUE_SIZE_LIMIT as usize + 1];
+        let _ = Entry::new(b"foo", &value[..VALUE_SIZE_LIMIT as usize])
+            .expect("failed to create entry with value size equal to size limit");
+
+        let err = Entry::new(b"foo", &value)
+            .expect_err("failed to create entry with value size equal to size limit");
+        assert_eq!(
+            err,
+            InvalidEntryError::ValueSizeLimitExceeded {
+                got: VALUE_SIZE_LIMIT + 1,
+                limit: VALUE_SIZE_LIMIT
+            }
+        )
+    }
+}
+
 // TODO Test wal writable impl
 // TODO Property test that encoded size matches size written to buf
 // TODO Property test pairs encode into, decode from
-// TODO Test for checksum mismatch
+// TODO Test for checksum mismatch decode
