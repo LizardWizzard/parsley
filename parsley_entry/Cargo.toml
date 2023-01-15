@@ -1,0 +1,12 @@
+[package]
+name = "parsley_entry"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crc32fast.workspace = true
+parsley_durable_log = { path = "../parsley_durable_log" }
+parsley_io_util = { path = "../parsley_io_util" }
+thiserror.workspace = true

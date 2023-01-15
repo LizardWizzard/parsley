@@ -1,8 +1,6 @@
 #![feature(drain_filter)]
 
 pub mod reader;
-#[cfg(any(feature = "test_utils", test))]
-pub mod test_utils;
 pub mod writer;
 
 use self::reader::WalReadError;
@@ -24,10 +22,13 @@ macro_rules! debug_print {
 
 pub(crate) use debug_print;
 
-pub trait WalWritable<'rec> {
-    fn size(&self) -> u64;
-    fn serialize_into(&self, buf: &mut [u8]);
-    fn deserialize_from<'buf>(buf: &'buf [u8]) -> Result<(u64, Self), WalReadError>
+pub trait LogWritable<'rec> {
+    // This method should return the exact size that will be written to buf in `encode_into`.
+    fn encoded_size(&self) -> u64;
+
+    fn encode_into(&self, buf: &mut [u8]);
+
+    fn decode_from<'buf>(buf: &'buf [u8]) -> Result<(u64, Self), WalReadError>
     where
         Self: Sized,
         'buf: 'rec;
@@ -57,22 +58,107 @@ impl RecordMarker {
 
 #[cfg(test)]
 mod tests {
-    use super::reader::{WalConsumer, WalReadResult};
-    use crate::{reader::WalReader, test_utils::kv_record::KVWalRecord, writer::WalWriter};
+    mod record {
+        use std::{io::Write, mem};
+
+        use crc32fast::Hasher;
+        use parsley_io_util::{checksummed_read_buf, read_buf};
+
+        use crate::{reader::WalReadError, LogWritable};
+
+        pub const SIZE_OF_SIZE: u64 = mem::size_of::<u64>() as u64;
+        pub const CHECKSUM_SIZE: u64 = mem::size_of::<u32>() as u64;
+
+        #[derive(Debug)]
+        pub struct TestWalWritable<'rec> {
+            pub data: &'rec [u8],
+        }
+
+        impl<'rec> LogWritable<'rec> for TestWalWritable<'rec> {
+            fn encoded_size(&self) -> u64 {
+                SIZE_OF_SIZE + self.data.len() as u64 + CHECKSUM_SIZE
+            }
+
+            fn encode_into(&self, mut buf: &mut [u8]) {
+                let initial_pos = buf.len();
+
+                let mut checksum_hasher = Hasher::new();
+
+                // unwraps are ok? since caller already checked that there is enough space
+                let len = (self.data.len() as u64).to_be_bytes();
+                buf.write_all(&len).unwrap();
+
+                buf.write_all(self.data).unwrap();
+
+                checksum_hasher.update(&len);
+                checksum_hasher.update(&self.data);
+
+                buf.write_all(&checksum_hasher.finalize().to_be_bytes())
+                    .unwrap();
+                debug_assert_eq!(initial_pos - buf.len(), self.encoded_size() as usize);
+            }
+
+            fn decode_from<'buf>(
+                buf: &'buf [u8],
+            ) -> Result<(u64, Self), crate::reader::WalReadError>
+            where
+                Self: Sized,
+                'buf: 'rec,
+            {
+                let mut checksum_hasher = Hasher::new();
+                let mut pos = 0;
+                let len = u64::from_be_bytes(
+                    checksummed_read_buf(
+                        &buf,
+                        &mut checksum_hasher,
+                        pos as usize..(pos + SIZE_OF_SIZE) as usize,
+                    )?
+                    .try_into()?,
+                );
+                pos += SIZE_OF_SIZE;
+
+                let data = checksummed_read_buf(
+                    &buf,
+                    &mut checksum_hasher,
+                    pos as usize..(pos + len) as usize,
+                )?;
+                pos += len;
+
+                let actual_checksum = u32::from_be_bytes(
+                    read_buf(&buf, pos as usize..(pos + CHECKSUM_SIZE) as usize)?.try_into()?,
+                );
+                let expected_checksum = checksum_hasher.finalize();
+                if actual_checksum != expected_checksum {
+                    Err(WalReadError::ChecksumMismatch {
+                        expected: expected_checksum,
+                        actual: actual_checksum,
+                    })?;
+                }
+                pos += CHECKSUM_SIZE;
+                let rec = TestWalWritable { data };
+                Ok((pos, rec))
+            }
+        }
+    }
+
+    use crate::reader::{WalConsumer, WalReadResult};
+    use crate::{reader::WalReader, writer::WalWriter};
     use futures::{future::join_all, Future};
     use glommio::LocalExecutor;
     use instrument_fs::instrument::durability_checker::DurabilityChecker;
     use std::{cell::RefCell, rc::Rc, task::Poll, time::Duration};
     use test_utils::test_dir_open;
 
+    const DATA_LEN: usize = 64;
+
     #[derive(Default)]
     struct StubConsumer {
-        data: Rc<RefCell<Vec<(Vec<u8>, Vec<u8>)>>>,
+        data: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
     struct StubConsumeFut<'a> {
-        data: Rc<RefCell<Vec<(Vec<u8>, Vec<u8>)>>>,
-        record: KVWalRecord<'a>,
+        data: Rc<RefCell<Vec<Vec<u8>>>>,
+        record: record::TestWalWritable<'a>,
     }
 
     impl<'a> Future for StubConsumeFut<'a> {
@@ -83,14 +169,13 @@ mod tests {
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
             // println!("consuming key {}", self.record.key[0]);
-            (&mut *self.data.borrow_mut())
-                .push((self.record.key.to_owned(), self.record.value.to_owned()));
+            (&mut *self.data.borrow_mut()).push(self.record.data.to_owned());
             Poll::Ready(Ok(()))
         }
     }
 
     impl WalConsumer for StubConsumer {
-        type Record<'a> = KVWalRecord<'a>;
+        type Record<'a> = record::TestWalWritable<'a>;
         type ConsumeFut<'a> = StubConsumeFut<'a>;
 
         fn consume<'a>(&self, record: Self::Record<'a>) -> Self::ConsumeFut<'a> {
@@ -140,13 +225,9 @@ mod tests {
             for i in 0u64..records {
                 let cloned = wal_segment_writer.clone();
                 let jh = glommio::spawn_local(async move {
-                    let key = vec![i as u8; 32];
-                    let value = vec![i as u8; 32];
+                    let data = vec![i as u8; DATA_LEN];
 
-                    let record = KVWalRecord {
-                        key: &key,
-                        value: &value,
-                    };
+                    let record = record::TestWalWritable { data: &data };
                     cloned.write(record).await.unwrap();
                 })
                 .detach();
@@ -173,13 +254,12 @@ mod tests {
                 read_finish_result.last_segment.file_name().unwrap(),
                 "0.wal"
             );
-            assert_eq!(read_finish_result.last_segment_pos, 8532);
+            assert_eq!(read_finish_result.last_segment_pos, 7861);
 
             assert!(consumer.data.borrow().len() > 0);
             assert_eq!(consumer.data.borrow().len() as u64, records);
-            for (idx, (k, v)) in consumer.data.borrow().iter().enumerate() {
-                assert_eq!(k, &vec![idx as u8; 32]);
-                assert_eq!(v, &vec![idx as u8; 32]);
+            for (idx, d) in consumer.data.borrow().iter().enumerate() {
+                assert_eq!(d, &vec![idx as u8; DATA_LEN]);
             }
         });
     }
@@ -256,13 +336,9 @@ mod tests {
             for i in 0u64..records {
                 let cloned = wal_segment_writer.clone();
                 let jh = glommio::spawn_local(async move {
-                    let key = vec![i as u8; 32];
-                    let value = vec![i as u8; 32];
+                    let data = vec![i as u8; DATA_LEN];
 
-                    let record = KVWalRecord {
-                        key: &key,
-                        value: &value,
-                    };
+                    let record = record::TestWalWritable { data: &data };
                     cloned
                         .write(record)
                         .await
@@ -298,9 +374,8 @@ mod tests {
 
             assert!(consumer.data.borrow().len() > 0);
             // assert_eq!(consumer.data.borrow().len() as u64, records);
-            for (idx, (k, v)) in consumer.data.borrow().iter().enumerate() {
-                assert_eq!(k, &vec![idx as u8; 32], "key data mismatch at {idx}");
-                assert_eq!(v, &vec![idx as u8; 32], "value data mismatch at {idx}");
+            for (idx, d) in consumer.data.borrow().iter().enumerate() {
+                assert_eq!(d, &vec![idx as u8; DATA_LEN], "data mismatch at {idx}");
             }
         });
     }

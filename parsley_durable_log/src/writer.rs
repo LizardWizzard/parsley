@@ -1,7 +1,7 @@
 use std::{
     cell::{RefCell, RefMut},
     collections::VecDeque,
-    fmt::Display,
+    fmt::Debug,
     io::Write,
     mem,
     path::PathBuf,
@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-use super::{RecordMarker, WalWritable};
+use super::{LogWritable, RecordMarker};
 use futures::future::{join_all, poll_fn};
 use glommio::sync::RwLock;
 use glommio::GlommioError;
@@ -22,6 +22,8 @@ use instrument_fs::{
 };
 use thiserror::Error;
 
+// TODO module level doc
+
 fn wal_file_name(idx: u64) -> String {
     format!("{}.wal", idx)
 }
@@ -29,16 +31,22 @@ fn wal_file_name(idx: u64) -> String {
 // for now assume key value pair does not cross segment boundary, this may become useful for very large values, maybe support later
 #[derive(Error, Debug)]
 pub enum WalWriteError {
-    #[error("record size exceeded size of one buffer, this is currently not supported")]
+    // TODO This can happen only during init, may worth to split to separate error type
+    #[error(
+        "Buf size is not aligned to segment size. Buf size: {buf_size} Seg size: {segment_size}"
+    )]
+    BufSizeNotAlignedToSegmentSize { buf_size: u64, segment_size: u64 },
+
+    #[error("Record size exceeded size of one buffer, this is currently not supported")]
     RecordSizeLimitExceeded,
 
-    #[error("task was closed")]
+    #[error("Task was closed")]
     TaskClosed,
 
-    #[error("flush is already in progress")]
+    #[error("Flush is already in progress")]
     FlushIsAlreadyInProgress,
 
-    #[error("glommio error {0}")]
+    #[error("Glommio error {0}")]
     Glommio(#[from] GlommioError<()>),
 }
 
@@ -52,17 +60,18 @@ enum WriteState {
 struct WalSegmentWriterState<I: Instrument + Clone> {
     // This is the segment we are currently writing to
     segment_file: Rc<InstrumentedDmaFile<I>>,
-    // These are wakers for tasks that called write and are waiting for the flush
+    // These are wakers for tasks that called write and are waiting for the flush.
     // u64 corrensponds to the position in the file which is needed to calculate
     // which writes are durable during flush. Flush operation is issued when
     // we are in a specific offset of the file, and when flush is completed
     // writes with lower offset are considered durable
-    // TODO what about multiple segments and this u64? segment no should be included
+    // FIXME what about multiple segments and this u64? segment no should be included
+    //     (needed for consurrent switch to be safe)
     flush_waiter_wakers: Vec<(u64, WriteState)>,
     // these are handles to tasks which write filled buffers
     // FIXME we do nothing with pending tasks, we need to ensure that buffers scheduled
     // to write with position less than flush positon are successfully written
-    // FIXME include segment no
+    // FIXME include segment no see above for reasoning
     pending_writes: Vec<(u64, JoinHandle<WalWriteResult<()>>)>,
     // queue of allocated dma buffers (cannot be shared between different files, TODO find out why)
     // TODO make a task that fills the queue in the background
@@ -80,8 +89,6 @@ impl<I: Instrument + Clone> WalSegmentWriterState<I> {
         buf_size: u64,
         buf_num: usize,
     ) -> Self {
-        // TODO check segsize vs buf_size * buf_num
-
         let mut buf_queue = VecDeque::with_capacity(buf_num);
         (0..buf_num)
             .into_iter()
@@ -98,11 +105,11 @@ impl<I: Instrument + Clone> WalSegmentWriterState<I> {
         }
     }
 
-    pub fn write_record<'a, T: WalWritable<'a>>(&mut self, record: &T) {
+    pub fn write_record<'a, T: LogWritable<'a>>(&mut self, record: &T) {
         let buf = self.buf_queue[0].as_bytes_mut();
         buf[self.buf_pos as usize] = RecordMarker::Data as u8;
         self.buf_pos += 1;
-        record.serialize_into(&mut buf[self.buf_pos as usize..]);
+        record.encode_into(&mut buf[self.buf_pos as usize..]);
     }
 
     pub fn write_shutdown(&mut self) {
@@ -142,13 +149,20 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         buf_num: usize,
         segment_size: u64,
     ) -> WalWriteResult<Self> {
-        // TODO find out if continue segment file is some
-        //  or create new in wal dir
+        // segsize needs to be aligned by buf_size
+        if segment_size % buf_size != 0 {
+            return Err(WalWriteError::BufSizeNotAlignedToSegmentSize {
+                buf_size,
+                segment_size,
+            });
+        }
+
         let segment_file = match continue_segment_file {
             Some(dma_file) => dma_file,
             None => {
                 // TODO proper segment naming, file name is first lsn
                 // think about .partial extension
+                // TODO unify with segment switch code, e g new_segment_file or something
                 let segment_file = wal_dir.create_file(wal_file_name(0)).await?;
                 segment_file.pre_allocate(segment_size).await?;
                 segment_file.fdatasync().await?;
@@ -223,7 +237,8 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
                 .buf_queue
                 .push_back(new_buf); // TODO offload to low priority task queue
 
-            // save write pos, and advance it for future writes, so concurrent writes receive correct positions so there is no race condition
+            // save write pos, and advance it for future writes,
+            // so concurrent writes receive correct positions so there is no race condition
             let file_pos = state.current_segment_writer_state.file_pos;
             state.current_segment_writer_state.file_pos += state.buf_size;
             let dma_file = Rc::clone(&state.current_segment_writer_state.segment_file);
@@ -291,12 +306,6 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         // 3. initialize new segment file (could it be pre initialized to reduce latency of segment switch?)
         // 4. continue writing
 
-        // check if flush already in progress
-
-        // we probably need a flag or a lock to prevent concurrent segment switch,
-        // if we detected one we should wait on the lock and then continue with new one
-        // we can even use same pattern with separate list of wakers, i e who waits for segment switch to complete
-        // when it is completed we can wake them up
         let current_segment_idx = state.current_segment_idx + 1;
 
         let current_segment_file = Rc::clone(&state.current_segment_writer_state.segment_file);
@@ -344,23 +353,26 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         let segment_size = state.segment_size;
         drop(state);
         self.flush().await?;
-        // TODO can we batch these calls?
+        // TODO can we batch close and create? implement, check
         current_segment_file.close_rc().await?;
         // TODO create struct called SegmentFile
         let new_segment_file = InstrumentedDmaFile::create(&new_segment_path, instrument).await?;
-        // use pre-allocate to reduce pressure on the fs to avoid requesting to allocate blocks on-demand
+        // Use pre-allocate to reduce pressure on the fs to avoid blocking on
+        // block allocation requests on the hot path for future writes
         new_segment_file.pre_allocate(segment_size).await?;
-
+        // Sync file contents to disk
         new_segment_file.fdatasync().await?;
-        wal_dir_to_fsync.sync().await?;
         // Running sync on directory is required for durability of newly created file directory entry
+        wal_dir_to_fsync.sync().await?;
+        // Run durability checks
         new_segment_file.ensure_durable(None);
 
+        // We are holding flush lock. So there is no race with assigning next index
         let mut state = self.state.borrow_mut();
         state.current_segment_idx = current_segment_idx;
-        // TODO There should be no incomplete writes, should we block everything?
-        // What to do with writes which are started during these awaits?
-        // see comment above self.flush
+
+        // There should be no incomplete writes for current segment.
+        // This may change if concurrent segment switch is implemented
         assert_eq!(state.current_segment_writer_state.pending_writes.len(), 0);
         assert_eq!(
             state.current_segment_writer_state.flush_waiter_wakers.len(),
@@ -376,9 +388,11 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         Ok(())
     }
 
-    pub async fn write<'a, T: WalWritable<'a> + Display>(&self, record: T) -> WalWriteResult<()> {
+    // Note: it is possible to write different types implementing LogWritable into one log
+    //     there is no strict reason for it to be this way, no reason to do t
+    pub async fn write<'a, T: LogWritable<'a> + Debug>(&self, record: T) -> WalWriteResult<()> {
         let state = self.state.borrow_mut();
-        let record_size = record.size();
+        let record_size = record.encoded_size();
         if record_size > state.buf_size {
             // for now this is a limitation
             return Err(WalWriteError::RecordSizeLimitExceeded);
@@ -443,7 +457,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
             }
         })
         .await;
-        crate::debug_print!("write end {}", record);
+        crate::debug_print!("write end {:?}", record);
         let mut state = self.state.borrow_mut();
         state
             .write_duration_histogram

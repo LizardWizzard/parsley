@@ -10,8 +10,7 @@ futures.workspace = true
 glommio.workspace = true
 histogram.workspace = true
 instrument_fs = { path = "../instrument_fs", features = ["glommio"] }
-parsley_durable_log = { path = "../parsley_durable_log", features = [
-    "test_utils",
-] }
+parsley_durable_log = { path = "../parsley_durable_log" }
+parsley_entry = { path = "../parsley_entry" }
 pico-args = { version = "0.5" }
 test_utils = { path = "../test_utils" }

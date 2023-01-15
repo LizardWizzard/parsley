@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::Entry, HashMap},
-    convert::TryInto,
+    collections::{hash_map, HashMap},
     error::Error,
     rc::Rc,
     task::Poll,
@@ -14,10 +13,10 @@ use histogram::Histogram;
 use instrument_fs::{adapter::glommio::InstrumentedDirectory, Noop};
 use parsley_durable_log::{
     reader::{WalConsumer, WalReadResult, WalReader},
-    test_utils::kv_record::{KVWalRecord, CHECKSUM_SIZE, RECORD_HEADER_SIZE},
     writer::{WalWriteError, WalWriter},
 };
 use parsley_durable_log_bench::display_histogram;
+use parsley_entry::Entry;
 use test_utils::test_dir;
 
 // TODO test without segment switches, large segment
@@ -27,9 +26,9 @@ use test_utils::test_dir;
 // TODO create multiple executors?
 // TODO accept jobfile and add visualization layer
 
-fn get_record<'a>(key: &'a mut [u8], value: &'a [u8], record_no: u64) -> KVWalRecord<'a> {
+fn get_record<'a>(key: &'a mut [u8], value: &'a [u8], record_no: u64) -> Entry<'a> {
     key[..8].copy_from_slice(&record_no.to_le_bytes());
-    KVWalRecord { key, value }
+    Entry::new(key, value).expect("correct entry")
 }
 
 async fn writer(
@@ -169,7 +168,7 @@ impl Default for Args {
 
 struct ValidateConsumerFut<'a> {
     data: Rc<RefCell<HashMap<u64, u64>>>,
-    record: KVWalRecord<'a>,
+    record: Entry<'a>,
 }
 
 impl<'a> Future for ValidateConsumerFut<'a> {
@@ -179,17 +178,17 @@ impl<'a> Future for ValidateConsumerFut<'a> {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        let writer_id = u64::from_le_bytes(self.record.value[..8].try_into().unwrap());
-        let record_no = u64::from_le_bytes(self.record.key[..8].try_into().unwrap());
+        let writer_id = u64::from_le_bytes(self.record.value()[..8].try_into().unwrap());
+        let record_no = u64::from_le_bytes(self.record.key()[..8].try_into().unwrap());
 
         match self.data.borrow_mut().entry(writer_id) {
-            Entry::Occupied(mut o) => {
+            hash_map::Entry::Occupied(mut o) => {
                 let last_seen = o.get_mut();
                 *last_seen += 1;
                 // check that record ids for writers are strictly in order
                 assert_eq!(*last_seen, record_no);
             }
-            Entry::Vacant(v) => {
+            hash_map::Entry::Vacant(v) => {
                 assert_eq!(record_no, 0); // we got first record
                 v.insert(record_no);
             }
@@ -205,7 +204,7 @@ struct ValidateConsumer {
 }
 
 impl WalConsumer for ValidateConsumer {
-    type Record<'a> = KVWalRecord<'a>;
+    type Record<'a> = Entry<'a>;
 
     type ConsumeFut<'a> = ValidateConsumerFut<'a>;
 
@@ -220,8 +219,10 @@ impl WalConsumer for ValidateConsumer {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse()?;
 
-    let record_size =
-        args.key_size_bytes + args.value_size_bytes + RECORD_HEADER_SIZE + CHECKSUM_SIZE;
+    let record_size = args.key_size_bytes
+        + args.value_size_bytes
+        + parsley_entry::RECORD_HEADER_SIZE
+        + parsley_entry::CHECKSUM_SIZE;
     let num_records_total = args.target_write_size_bytes / record_size;
     let num_records_per_writer = num_records_total / args.num_writers;
 

@@ -1,68 +1,42 @@
-use std::{
-    array::TryFromSliceError, fmt::Debug, future::Future, io, ops::Range, path::PathBuf, rc::Rc,
-};
+use std::{array::TryFromSliceError, fmt::Debug, future::Future, io, path::PathBuf, rc::Rc};
 
-use super::{RecordMarker, WalWritable};
-use crc32fast::Hasher;
+use super::{LogWritable, RecordMarker};
 use glommio::GlommioError;
 use instrument_fs::{
     adapter::glommio::{InstrumentedDirectory, InstrumentedDmaFile},
     Instrument,
 };
+use parsley_io_util::UnexpectedEofError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum WalReadError {
-    #[error("corrupted segment, unexpected eof at offset {offset}")]
-    UnexpectedEof { offset: u64 },
+    #[error("Corrupted segment:")]
+    UnexpectedEof(#[from] UnexpectedEofError),
 
-    #[error("corrupted segment, unexpected eof (length decode failed)")]
+    #[error("Corrupted segment, unexpected eof (length decode failed)")]
     LengthDecodeFailed(#[from] TryFromSliceError),
 
-    #[error("segment checksum mismatch. expected {expected:x?} found {actual:x?}")]
+    #[error("Segment checksum mismatch. Expected {expected:x?} found {actual:x?}")]
     ChecksumMismatch { expected: u32, actual: u32 },
 
-    #[error("unknown record marker {invalid} at offset {offset}")]
+    #[error("Unknown record marker {invalid} at offset {offset}")]
     InvalidRecordMarker { invalid: u8, offset: u64 },
 
-    #[error("invalid log file name at: {at}")]
+    #[error("Invalid log file name at: {at}")]
     InvalidLogFileName { at: PathBuf },
 
-    #[error("glommio error")]
+    #[error("Glommio error")]
     Glommio(#[from] GlommioError<()>),
 
-    #[error("io error")]
+    #[error("Io error")]
     Io(#[from] io::Error),
 }
 
 pub type WalReadResult<T> = Result<T, WalReadError>;
 
-pub fn read_buf(buf: &[u8], range: Range<usize>) -> WalReadResult<&[u8]> {
-    let expected_len = range.len();
-    let slice = &buf.get(range).ok_or(WalReadError::UnexpectedEof {
-        offset: buf.len() as u64,
-    })?;
-    if slice.len() != expected_len {
-        Err(WalReadError::UnexpectedEof {
-            offset: slice.len() as u64,
-        })?
-    }
-    Ok(slice)
-}
-
-// TODO can it be customized on top of io::Read?
-pub fn checksummed_read_buf<'a>(
-    buf: &'a [u8],
-    hasher: &mut Hasher,
-    range: Range<usize>,
-) -> WalReadResult<&'a [u8]> {
-    let slice = read_buf(buf, range)?;
-    hasher.update(slice);
-    Ok(slice)
-}
-
 pub trait WalConsumer {
-    type Record<'a>: WalWritable<'a>;
+    type Record<'a>: LogWritable<'a>;
     type ConsumeFut<'a>: Future<Output = WalReadResult<()>>;
 
     fn consume<'a>(&self, record: Self::Record<'a>) -> Self::ConsumeFut<'a>;
@@ -146,9 +120,8 @@ impl<Consumer: WalConsumer, I: Instrument + Clone> WalSegmentStreamReader<Consum
                         // one we propagate it up to the segment iterator so it can decide.
                         // Otherwise deserialization error is not fatal and means abnormal shutdown
                         // so writer can continue writing at self.file_pos + buf_pos
-                        match Consumer::Record::<'_>::deserialize_from(
-                            &read_result[buf_pos as usize..],
-                        ) {
+                        match Consumer::Record::<'_>::decode_from(&read_result[buf_pos as usize..])
+                        {
                             Ok((consumed_pos, record)) => {
                                 buf_pos += consumed_pos;
                                 self.consumer.consume(record).await?;

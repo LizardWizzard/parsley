@@ -729,6 +729,7 @@ dependencies = [
  "glommio",
  "histogram",
  "instrument_fs",
+ "parsley_io_util",
  "test_utils",
  "thiserror",
 ]
@@ -742,8 +743,27 @@ dependencies = [
  "histogram",
  "instrument_fs",
  "parsley_durable_log",
+ "parsley_entry",
  "pico-args",
  "test_utils",
+]
+
+[[package]]
+name = "parsley_entry"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "parsley_durable_log",
+ "parsley_io_util",
+ "thiserror",
+]
+
+[[package]]
+name = "parsley_io_util"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "thiserror",
 ]
 
 [[package]]

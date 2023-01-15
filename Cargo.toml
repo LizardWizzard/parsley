@@ -12,6 +12,8 @@ members = [
     "instrument_fs",
     "parsley_durable_log_bench",
     "parsley_durable_log",
+    "parsley_entry",
+    "parsley_io_util",
     "pmem_storage",
     "rangetree",
 ]
@@ -26,6 +28,7 @@ log = "*"
 rangetree = { path = "rangetree" }
 
 [workspace.dependencies]
+crc32fast = "1"
 futures = "0.3"
 # TODO rule out the duplication
 futures-lite = "1.12"
