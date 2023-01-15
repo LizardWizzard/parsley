@@ -19,6 +19,24 @@ use parsley_durable_log_bench::display_histogram;
 use parsley_entry::Entry;
 use test_utils::test_dir;
 
+const HELP: &str = "\
+This is the tool to test durable log writer performance.
+
+USAGE:
+  app [OPTIONS] --number NUMBER [INPUT]
+FLAGS:
+  -h, --help                       Prints help information
+OPTIONS:
+  --buf-size-bytes NUMBER          Size of one buffer (flush unit)
+  --buf-queue-size NUMBER          Number of buffers in a buffer queue
+  --segment-size-bytes NUMBER      Target size for one log segment
+  --num-writers NUMBER             Number of concurrent writers
+  --key-size-bytes NUMBER          Size of a value in key-value entry
+  --value-size-bytes NUMBER        Size of a value in key-value entry
+  --flush-interval-micros NUMBER   Sets interval at which flush method is called
+  --target-write-size-bytes NUMBER Controls target write size
+";
+
 // TODO play with task queues with different priorities, experiment with different latency
 
 fn get_record<'a>(key: &'a mut [u8], value: &'a [u8], record_no: u64) -> Entry<'a> {
@@ -39,7 +57,7 @@ async fn writer(
 
     for record_no in 0..num_records {
         let record = get_record(&mut key, &value, record_no);
-        wal_writer.write(record).await.unwrap(); // TODO error
+        wal_writer.write(record).await.expect("write failed");
     }
 }
 
@@ -97,12 +115,11 @@ struct Args {
 impl Args {
     fn parse() -> Result<Self, pico_args::Error> {
         let mut pargs = pico_args::Arguments::from_env();
-        // TODO help
         // Help has a higher priority and should be handled separately.
-        // if pargs.contains(["-h", "--help"]) {
-        //     print!("{}", HELP);
-        //     std::process::exit(0);
-        // }
+        if pargs.contains(["-h", "--help"]) {
+            print!("{}", HELP);
+            std::process::exit(0);
+        }
         let mut args = Args::default();
         if let Some(v) = pargs.opt_value_from_str("--buf-size-bytes")? {
             args.buf_size_bytes = v;
