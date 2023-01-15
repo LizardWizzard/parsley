@@ -192,7 +192,6 @@ impl FileState {
     }
 
     fn apply_fsync(&mut self) {
-        dbg!(self.max_written_pos, &self.pending_changes);
         self.synced_after_creation = true;
         self.max_durable_pos = self.max_written_pos;
         self.pending_changes.clear()
@@ -345,7 +344,6 @@ impl DurabilityCheckerState {
     }
 
     fn apply_event(&mut self, event: Event) -> Result<(), Error> {
-        dbg!(&event);
         match event {
             Event::Open(path, fd) => {
                 self.fd_to_path_buf.insert(fd, path);
@@ -520,8 +518,6 @@ impl DurabilityCheckerState {
                     .path_states
                     .get_mut(path)
                     .ok_or_else(|| Error::UnknownPath(path.to_owned()))?;
-
-                dbg!(&path_state);
 
                 match up_to {
                     // TODO bail if up to is larger than the size of the file
