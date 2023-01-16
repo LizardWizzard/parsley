@@ -233,7 +233,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let record_size = args.key_size_bytes
         + args.value_size_bytes
-        + parsley_entry::RECORD_HEADER_SIZE
+        + parsley_entry::KEY_SIZE_LEN
+        + parsley_entry::VALUE_SIZE_LEN
         + parsley_entry::CHECKSUM_SIZE;
     let num_records_total = args.target_write_size_bytes / record_size;
     let num_records_per_writer = num_records_total / args.num_writers;

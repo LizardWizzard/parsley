@@ -11,13 +11,13 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum WalReadError {
-    #[error("Corrupted segment:")]
+    #[error("Corrupted segment: {0}")]
     UnexpectedEof(#[from] UnexpectedEofError),
 
     #[error("Corrupted segment, unexpected eof (length decode failed)")]
     LengthDecodeFailed(#[from] TryFromSliceError),
 
-    #[error("Segment checksum mismatch. Expected {expected:x?} found {actual:x?}")]
+    #[error("Record checksum mismatch. Expected {expected:x?} found {actual:x?}")]
     ChecksumMismatch { expected: u32, actual: u32 },
 
     #[error("Unknown record marker {invalid} at offset {offset}")]

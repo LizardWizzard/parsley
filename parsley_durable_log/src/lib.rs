@@ -112,6 +112,7 @@ mod tests {
                         &buf,
                         &mut checksum_hasher,
                         pos as usize..(pos + SIZE_OF_SIZE) as usize,
+                        "len",
                     )?
                     .try_into()?,
                 );
@@ -121,11 +122,17 @@ mod tests {
                     &buf,
                     &mut checksum_hasher,
                     pos as usize..(pos + len) as usize,
+                    "data",
                 )?;
                 pos += len;
 
                 let actual_checksum = u32::from_be_bytes(
-                    read_buf(&buf, pos as usize..(pos + CHECKSUM_SIZE) as usize)?.try_into()?,
+                    read_buf(
+                        &buf,
+                        pos as usize..(pos + CHECKSUM_SIZE) as usize,
+                        "checksum",
+                    )?
+                    .try_into()?,
                 );
                 let expected_checksum = checksum_hasher.finalize();
                 if actual_checksum != expected_checksum {

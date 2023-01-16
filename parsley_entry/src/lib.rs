@@ -62,13 +62,13 @@ impl<'e> Entry<'e> {
     }
 }
 
-pub const RECORD_HEADER_SIZE: u64 = (mem::size_of::<u64>() * 2) as u64;
-pub const SIZE_OF_SIZE: u64 = mem::size_of::<u64>() as u64;
+pub const KEY_SIZE_LEN: u64 = mem::size_of::<u16>() as u64;
+pub const VALUE_SIZE_LEN: u64 = mem::size_of::<u32>() as u64;
 pub const CHECKSUM_SIZE: u64 = mem::size_of::<u32>() as u64;
 
 impl<'rec> LogWritable<'rec> for Entry<'rec> {
     fn encoded_size(&self) -> u64 {
-        RECORD_HEADER_SIZE + (self.key.len() + self.value.len()) as u64 + CHECKSUM_SIZE
+        KEY_SIZE_LEN + VALUE_SIZE_LEN + (self.key.len() + self.value.len()) as u64 + CHECKSUM_SIZE
     }
 
     fn encode_into(&self, mut buf: &mut [u8]) {
@@ -76,10 +76,14 @@ impl<'rec> LogWritable<'rec> for Entry<'rec> {
 
         let mut checksum_hasher = Hasher::new();
         // unwraps are ok? since caller already checked that there is enough space
-        let key_len = (self.key.len() as u64).to_be_bytes();
+        let key_len = (u16::try_from(self.key.len()))
+            .expect("is guaranteed by limit enforced in new")
+            .to_be_bytes();
         buf.write_all(&key_len).unwrap();
 
-        let value_len = (self.value.len() as u64).to_be_bytes();
+        let value_len = (u32::try_from(self.value.len()))
+            .expect("is guaranteed by limit enforced in new")
+            .to_be_bytes();
         buf.write_all(&value_len).unwrap();
 
         buf.write_all(self.key).unwrap();
@@ -102,30 +106,33 @@ impl<'rec> LogWritable<'rec> for Entry<'rec> {
     {
         let mut checksum_hasher = Hasher::new();
         let mut pos = 0;
-        let key_size = u64::from_be_bytes(
+        let key_size = u16::from_be_bytes(
             checksummed_read_buf(
                 &buf,
                 &mut checksum_hasher,
-                pos as usize..(pos + SIZE_OF_SIZE) as usize,
+                pos as usize..(pos + KEY_SIZE_LEN) as usize,
+                "key size",
             )?
             .try_into()?,
-        );
-        pos += SIZE_OF_SIZE;
+        ) as u64;
+        pos += KEY_SIZE_LEN;
 
-        let value_size = u64::from_be_bytes(
+        let value_size = u32::from_be_bytes(
             checksummed_read_buf(
                 &buf,
                 &mut checksum_hasher,
-                pos as usize..(pos + SIZE_OF_SIZE) as usize,
+                pos as usize..(pos + VALUE_SIZE_LEN) as usize,
+                "value size",
             )?
             .try_into()?,
-        );
-        pos += SIZE_OF_SIZE;
+        ) as u64;
+        pos += VALUE_SIZE_LEN;
 
         let key = checksummed_read_buf(
             &buf,
             &mut checksum_hasher,
             pos as usize..(pos + key_size) as usize,
+            "key",
         )?;
         pos += key_size;
 
@@ -133,11 +140,17 @@ impl<'rec> LogWritable<'rec> for Entry<'rec> {
             &buf,
             &mut checksum_hasher,
             pos as usize..(pos + value_size) as usize,
+            "value",
         )?;
         pos += value_size;
 
         let actual_checksum = u32::from_be_bytes(
-            read_buf(&buf, pos as usize..(pos + CHECKSUM_SIZE) as usize)?.try_into()?,
+            read_buf(
+                &buf,
+                pos as usize..(pos + CHECKSUM_SIZE) as usize,
+                "checksum",
+            )?
+            .try_into()?,
         );
         let expected_checksum = checksum_hasher.finalize();
         if actual_checksum != expected_checksum {
@@ -197,7 +210,56 @@ mod err_tests {
     }
 }
 
-// TODO Test wal writable impl
-// TODO Property test that encoded size matches size written to buf
-// TODO Property test pairs encode into, decode from
-// TODO Test for checksum mismatch decode
+#[cfg(test)]
+mod writable_tests {
+    use parsley_durable_log::{reader::WalReadError, LogWritable};
+
+    use crate::Entry;
+
+    #[test]
+    fn size_calculation() {
+        let key = [2; 10];
+        let value = [4; 12];
+        let entry = Entry::new(&key, &value).unwrap();
+        // k size, v size, encoded k size (u16) + encoded v size (u32) + checksum (u32)
+        let encoded_size = 10 + 12 + 2 + 4 + 4;
+        assert_eq!(encoded_size, entry.encoded_size());
+    }
+
+    #[test]
+    fn encode_decode() {
+        for ksize in (1..=101).step_by(20) {
+            for vsize in (0..=200).step_by(50) {
+                let key = vec![2; ksize];
+                let value = vec![4; vsize];
+                let entry = Entry::new(&key, &value).unwrap();
+                let size = entry.encoded_size();
+                let mut buf = vec![0; size as usize];
+                entry.encode_into(&mut buf);
+                let _ = Entry::decode_from(&buf).expect("cannot decode");
+
+                // Check checksum verification handles every byte change
+                for i in 0..size {
+                    let mut buf_clone = buf.clone();
+                    buf_clone[i as usize] += 1;
+                    let err = Entry::decode_from(&buf_clone)
+                        .expect_err("should've failed checksum verification");
+                    assert!(
+                        matches!(
+                            err,
+                            WalReadError::ChecksumMismatch { .. } | WalReadError::UnexpectedEof(..)
+                        ),
+                        "{}",
+                        err
+                    );
+                }
+
+                // Detect if record took less space than returned by encoded_size()
+                for i in 1..size {
+                    let _ = Entry::decode_from(&buf[..(size - i) as usize])
+                        .expect_err("decoded from shorter buf");
+                }
+            }
+        }
+    }
+}
