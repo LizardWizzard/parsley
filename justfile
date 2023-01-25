@@ -6,7 +6,7 @@ check:
 alias t := test
 
 test:
-    cargo test --all
+    cargo test --all --no-fail-fast
 
 alias b := build
 
@@ -17,3 +17,10 @@ alias br := build-release
 
 build-release:
     cargo build --all --release
+
+clippy:
+    cargo clippy
+
+alias v := verify
+
+verify: check test clippy
