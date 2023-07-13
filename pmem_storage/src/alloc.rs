@@ -1,7 +1,7 @@
 use std::{
     alloc::{Layout, LayoutError},
     fs::{self, OpenOptions},
-    io, mem,
+    io,
     path::PathBuf,
     ptr,
 };
@@ -81,11 +81,7 @@ where
         // FIXME cannot find a way to create MaybeUninit from pointer, the following is not ok because bitmap is not initialized yet
         let bitmap = self.mmap.as_ptr() as *mut Bitmap<BLOCK_SIZE>;
         unsafe {
-            ptr::copy_nonoverlapping(
-                &empty_bitmap as *const Bitmap<BLOCK_SIZE>,
-                bitmap,
-                mem::size_of::<Bitmap<BLOCK_SIZE>>(),
-            );
+            ptr::copy_nonoverlapping(&empty_bitmap as *const Bitmap<BLOCK_SIZE>, bitmap, 1);
         }
     }
 

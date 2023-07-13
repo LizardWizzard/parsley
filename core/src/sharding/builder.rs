@@ -125,6 +125,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> ShardBuilder<RangeMa
                                 .map(Option::unwrap)
                                 .map(Rc::new)
                                 .collect(),
+                            false,
                         );
 
                         shard

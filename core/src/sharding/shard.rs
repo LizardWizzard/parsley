@@ -182,7 +182,11 @@ pub struct Shard<RangeMapType: RangeMap<Vec<u8>, ShardDatum>> {
 }
 
 impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> {
-    pub fn new(id: usize, senders: Vec<Rc<ConnectedSender<Message<Data<RangeMapType>>>>>) -> Self {
+    pub fn new(
+        id: usize,
+        senders: Vec<Rc<ConnectedSender<Message<Data<RangeMapType>>>>>,
+        with_pmem: bool,
+    ) -> Self {
         let role = {
             if id == 0 {
                 ShardRole::Master
@@ -193,20 +197,26 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
         log::info!("shard id {:} role {:?}", id, role);
         let datums = vec![];
         let rangemap: Arc<RangeMapType::FROZEN> = Arc::new(RangeMapType::new().freeze());
+
+        let mut storages = vec![
+            DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
+            DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
+            DatumStorage::LSMTreeModelStorage(Rc::new(RefCell::new(LSMTreeModelStorage::new()))),
+        ];
+
+        if with_pmem {
+            storages.push(DatumStorage::PMemStorage(Rc::new(RefCell::new(
+                PMemDatumStorage::new(id),
+            ))))
+        }
+
         let state = ShardState {
             id,
             role,
             rangemap,
             datums,
             senders,
-            storages: vec![
-                DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
-                DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
-                DatumStorage::LSMTreeModelStorage(Rc::new(
-                    RefCell::new(LSMTreeModelStorage::new()),
-                )),
-                DatumStorage::PMemStorage(Rc::new(RefCell::new(PMemDatumStorage::new(id)))),
-            ],
+            storages,
             stats: Stats::default(),
             forwarded_get: HashMap::new(),
             forwarded_set: HashMap::new(),
@@ -595,12 +605,13 @@ mod tests {
             let (from_self_sender, from_self_receiver) = make_pair::<RangeMapType>().await;
             let (to_self_sender, to_self_receiver) = make_pair::<RangeMapType>().await;
 
-            let mut raw_shard: Shard<RangeMapType> = Shard::new(
+            let raw_shard: Shard<RangeMapType> = Shard::new(
                 0,
                 vec![to_self_sender, to_other_sender]
                     .into_iter()
                     .map(Rc::new)
                     .collect(),
+                false,
             );
             let (rangemap, rangespec) = get_initial_range_map::<RangeMapType>(0, 0);
             raw_shard.state_mut().rangemap = Arc::new(rangemap.freeze());
