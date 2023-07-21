@@ -12,13 +12,22 @@ pub mod instrument;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileRange {
     start: u64,
-    // inclusive
+    // exclusive
     end: u64,
+}
+
+impl FileRange {
+    fn from_pos_and_buf_len(pos: u64, buf_len: u64) -> Self {
+        Self {
+            start: pos,
+            end: pos + buf_len,
+        }
+    }
 }
 
 impl Display for FileRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("[{}..{}]", self.start, self.end))
+        f.write_fmt(format_args!("[{}..{})", self.start, self.end))
     }
 }
 
@@ -28,10 +37,16 @@ pub struct WriteEvent {
     file_range: FileRange,
 }
 
+impl WriteEvent {
+    fn new(fd: i32, pos: u64, buf_len: u64) -> Self {
+        Self {
+            fd,
+            file_range: FileRange::from_pos_and_buf_len(pos, buf_len),
+        }
+    }
+}
+
 // TODO warn when reading unflushed data
-// TODO trace open event, to index file not only by the path, but by the fd too, or only by the fd?
-//   on close we should remove the association because the fd might get assigned to another file
-// TODO use a bool like fdatasync_updates_size inside durability cvhecker to configure fdatasync behavior
 // TODO catch fsync retry problem, that it first cleans buffers and then
 // TODO single block overwrite should be safe?
 // TODO aggregate multiple errors into one
@@ -115,5 +130,22 @@ impl Instrument for Collect {
     fn apply_event(&self, event: Event) -> Result<(), Self::Error> {
         self.state.borrow_mut().push(event);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::FileRange;
+
+    #[test]
+    fn file_range() {
+        let fr = FileRange::from_pos_and_buf_len(0, 10);
+        assert_eq!(fr, FileRange { start: 0, end: 10 });
+
+        let fr = FileRange::from_pos_and_buf_len(10, 10);
+        assert_eq!(fr, FileRange { start: 10, end: 20 });
+
+        let fr = FileRange::from_pos_and_buf_len(1, 0);
+        assert_eq!(fr, FileRange { start: 1, end: 1 })
     }
 }

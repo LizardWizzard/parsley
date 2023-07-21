@@ -153,10 +153,7 @@ impl<I: Instrument + Clone> InstrumentedDmaFile<I> {
         self.instrument
             .apply_event(Event::Write(WriteEvent {
                 fd: self.file.as_raw_fd(),
-                file_range: FileRange {
-                    start: pos,
-                    end: pos + buf.len() as u64 - 1,
-                },
+                file_range: FileRange::from_pos_and_buf_len(pos, buf.len() as u64),
             }))
             .unwrap();
 
@@ -250,7 +247,7 @@ impl<I: Instrument + Clone> InstrumentedDmaFile<I> {
         });
 
         if let Err(e) = r {
-            println!("Error: {}", e);
+            eprintln!("Error: {}", e);
             panic!("Durability expectation violation")
         }
     }

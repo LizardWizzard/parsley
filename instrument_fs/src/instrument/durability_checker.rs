@@ -308,7 +308,6 @@ impl DurabilityCheckerState {
         // parent directory durable
         // check every parent until trusted dir is reached
         // i e for /foo/bar/baz check /foo/bar and /foo and /
-        // TODO check will root dir be handled correctly, corner case with components
         let components = path.components().collect::<Vec<_>>();
 
         for i in (0..components.len()).rev() {
@@ -363,7 +362,7 @@ impl DurabilityCheckerState {
                 let mut file_state = self.state_by_fd(write_event.fd)?.ensure_file_mut()?;
 
                 file_state.max_written_pos =
-                    cmp::max(file_state.max_written_pos, write_event.file_range.end);
+                    cmp::max(file_state.max_written_pos, write_event.file_range.end - 1);
 
                 file_state.pending_changes.push(write_event.file_range);
             }
@@ -596,28 +595,17 @@ pub fn apply_events(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fmt::{Debug, Display},
-        path::{Path, PathBuf},
-    };
+    use std::path::{Path, PathBuf};
 
-    use crate::{EitherPathOrFd, Event, FileRange, Instrument, WriteEvent};
+    use crate::{
+        instrument::durability_checker::PathState, EitherPathOrFd, Event, FileRange, Instrument,
+        WriteEvent,
+    };
 
     use super::{
         apply_events, DurabilityChecker, DurabilityViolationError, Error, FdatsyncBehavior,
         Horizon, PendingChanges,
     };
-
-    fn assert_err<T, E: Debug + Display + Eq>(r: Result<T, E>, expected: E) {
-        match r {
-            Ok(_) => panic!("expected err got ok"),
-            Err(e) => {
-                if e != expected {
-                    panic!("got unexpected error:\n{e:?}\nexpected:\n{expected:?}")
-                }
-            }
-        }
-    }
 
     #[test]
     fn basic() {
@@ -644,22 +632,24 @@ mod tests {
             },
         ];
 
-        assert_err(
-            apply_events(&mut checker, events),
+        assert_eq!(
+            apply_events(&mut checker, events).unwrap_err(),
             Error::DurabilityViolation(DurabilityViolationError::PendingChanges(PendingChanges {
                 pending_changes: vec![FileRange { start: 0, end: 10 }],
                 max_durable_pos: 0,
-                up_to: Horizon::MaxWrittenPos(10),
+                up_to: Horizon::MaxWrittenPos(9),
             })),
         );
 
         // file synced, parent dir not synced
         checker.apply_event(Event::Fsync(fd)).unwrap();
-        assert_err(
-            checker.apply_event(Event::EnsureFileDurable {
-                target: EitherPathOrFd::Fd(fd),
-                up_to: None,
-            }),
+        assert_eq!(
+            checker
+                .apply_event(Event::EnsureFileDurable {
+                    target: EitherPathOrFd::Fd(fd),
+                    up_to: None,
+                })
+                .unwrap_err(),
             Error::DurabilityViolation(DurabilityViolationError::ParentDirectoryNotSynced(
                 "/root/data".to_owned().into_boxed_str(),
             )),
@@ -749,7 +739,18 @@ mod tests {
         );
     }
 
-    fn durable_create_empty(checker: &mut DurabilityChecker, file: &Path, fd: i32) {
+    fn durable_create_dir(mut checker: &mut DurabilityChecker, path: &Path, dir_fd: i32) {
+        let events = [
+            Event::AddTrustedDir(PathBuf::from("/root")),
+            Event::CreateDir(path.to_owned()),
+            Event::Open(path.to_owned(), dir_fd),
+            Event::Fsync(dir_fd),
+            Event::EnsureDirDurable(path.to_owned()),
+        ];
+        apply_events(&mut checker, events).unwrap();
+    }
+
+    fn durable_create_empty_file(checker: &mut DurabilityChecker, file: &Path, fd: i32) {
         let parent = file.parent().unwrap().to_owned();
         let parent_fd = 9999;
         apply_events(
@@ -778,18 +779,11 @@ mod tests {
         // properly create directory
         let dir = PathBuf::from("/root/data");
         let dir_fd = 11;
-        let events = [
-            Event::AddTrustedDir(PathBuf::from("/root")),
-            Event::CreateDir(dir.clone()),
-            Event::Open(dir.clone(), dir_fd),
-            Event::Fsync(dir_fd),
-            Event::EnsureDirDurable(dir.clone()),
-        ];
-        apply_events(&mut checker, events).unwrap();
+        durable_create_dir(&mut checker, &dir, dir_fd);
 
         let f1 = PathBuf::from("/root/data/log1");
         let f1_fd = 1;
-        durable_create_empty(&mut checker, &f1, f1_fd);
+        durable_create_empty_file(&mut checker, &f1, f1_fd);
 
         // write 0, 10
         // fdatasync
@@ -806,23 +800,25 @@ mod tests {
         )
         .unwrap();
 
-        assert_err(
-            checker.apply_event(Event::EnsureFileDurable {
-                target: EitherPathOrFd::Path(f1.to_owned()),
-                up_to: None,
-            }),
+        assert_eq!(
+            checker
+                .apply_event(Event::EnsureFileDurable {
+                    target: EitherPathOrFd::Path(f1.to_owned()),
+                    up_to: None,
+                })
+                .unwrap_err(),
             Error::DurabilityViolation(DurabilityViolationError::PendingChanges(PendingChanges {
                 pending_changes: vec![],
                 max_durable_pos: 0,
-                up_to: Horizon::MaxWrittenPos(10),
+                up_to: Horizon::MaxWrittenPos(9),
             })),
         );
 
         let f2 = PathBuf::from("/root/data/log2");
         let f2_fd = 2;
-        durable_create_empty(&mut checker, &f2, f2_fd);
+        durable_create_empty_file(&mut checker, &f2, f2_fd);
 
-        // set len 11 (range including 10)
+        // set len 11 (ran 10)
         // datasync
         // write 0, 10
         // ensure file durable -> ok
@@ -846,7 +842,7 @@ mod tests {
 
         let f3 = PathBuf::from("/root/data/log3");
         let f3_fd = 3;
-        durable_create_empty(&mut checker, &f3, f3_fd);
+        durable_create_empty_file(&mut checker, &f3, f3_fd);
 
         // set len 15
         // datasync
@@ -854,12 +850,75 @@ mod tests {
         // write 5, 20
         // write 20, 30
         // set len 18
-        // TODO check what changes are left
+        // Checking resulting pending changes.
+        let f4 = PathBuf::from("/root/data/log4");
+        let f4_fd = 4;
+        durable_create_empty_file(&mut checker, &f4, f4_fd);
+        let events = [
+            Event::SetLen(f4_fd, 15),
+            Event::Fdatasync(f4_fd),
+            Event::Write(WriteEvent::new(f4_fd, 0, 11)),
+            Event::Write(WriteEvent::new(f4_fd, 5, 15)),
+            Event::Write(WriteEvent::new(f4_fd, 20, 10)),
+            Event::SetLen(f4_fd, 18),
+        ];
+
+        apply_events(&mut checker, events).expect("should be ok");
+        {
+            let state = checker.state.borrow_mut();
+            let path_state = state.path_states.get(&f4).expect("state should exist");
+
+            let file_state = match path_state {
+                PathState::File(f) => f,
+                PathState::Directory(_) => panic!("should be file, not a directory"),
+            };
+
+            assert_eq!(
+                &file_state.pending_changes,
+                &[
+                    FileRange::from_pos_and_buf_len(0, 11),
+                    FileRange::from_pos_and_buf_len(5, 13), // [5, 18)
+                ]
+            );
+        }
 
         // set len 15
         // write 0, 20
         // datasync
         // durable up to 15
+        // FIXME: fails
+        // let f5 = PathBuf::from("/root/data/log5");
+        // let f5_fd = 5;
+        // durable_create_empty_file(&mut checker, &f5, f5_fd);
+        // let events = [
+        //     Event::SetLen(f5_fd, 15),
+        //     Event::Write(WriteEvent::new(f5_fd, 0, 20)),
+        //     Event::Fdatasync(f5_fd),
+        //     Event::EnsureFileDurable {
+        //         target: EitherPathOrFd::Fd(f5_fd),
+        //         up_to: Some(15),
+        //     },
+        // ];
+
+        // apply_events(&mut checker, events).expect("should be ok");
+
+        // let state = checker.state.borrow_mut();
+        // let path_state = state.path_states.get(&f5).expect("state should exist");
+
+        // let file_state = match path_state {
+        //     PathState::File(f) => f,
+        //     PathState::Directory(_) => panic!("should be file, not a directory"),
+        // };
+
+        // dbg!(&file_state.pending_changes);
+        // assert_eq!(
+        //     &file_state.pending_changes,
+        //     &[
+        //         FileRange::from_pos_and_buf_len(0, 11),
+        //         FileRange::from_pos_and_buf_len(5, 13), // [5, 18)
+        //     ]
+        // )
+
         // TODO check what changes are left
 
         // apply_events(
