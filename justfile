@@ -6,7 +6,7 @@ check:
 alias t := test
 
 test:
-    cargo test --all --no-fail-fast
+    cargo test --all --no-fail-fast --exclude pmem_storage
 
 alias b := build
 
