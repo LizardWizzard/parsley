@@ -583,16 +583,6 @@ impl Instrument for DurabilityChecker {
     }
 }
 
-pub fn apply_events(
-    checker: &mut DurabilityChecker,
-    events: impl IntoIterator<Item = Event>,
-) -> Result<(), Error> {
-    for event in events {
-        checker.apply_event(event)?
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -603,23 +593,79 @@ mod tests {
     };
 
     use super::{
-        apply_events, DurabilityChecker, DurabilityViolationError, Error, FdatsyncBehavior,
-        Horizon, PendingChanges,
+        DurabilityChecker, DurabilityViolationError, Error, FdatsyncBehavior, Horizon,
+        PendingChanges,
     };
+
+    struct Harness {
+        checker: DurabilityChecker,
+        root: PathBuf,
+        fd: i32,
+    }
+
+    impl Harness {
+        fn new(checker: DurabilityChecker) -> Self {
+            let root = PathBuf::from("/root");
+            checker
+                .apply_event(Event::AddTrustedDir(root.clone()))
+                .expect("cannot fail");
+
+            Self {
+                checker,
+                root,
+                fd: 0,
+            }
+        }
+
+        fn one_file(&mut self) -> (PathBuf, i32) {
+            let path = self.root.join("data");
+            (path, self.next_fd())
+        }
+
+        fn next_fd(&mut self) -> i32 {
+            self.fd += 1;
+            self.fd
+        }
+
+        fn apply_events(&mut self, events: impl IntoIterator<Item = Event>) -> Result<(), Error> {
+            for event in events {
+                self.checker.apply_event(event)?
+            }
+            Ok(())
+        }
+
+        fn durable_create_empty_file(&mut self, file: &Path, fd: i32) {
+            let parent = file.parent().unwrap().to_owned();
+            let parent_fd = self.next_fd();
+            self.apply_events([
+                Event::Create(file.to_owned()),
+                Event::Open(file.to_owned(), fd),
+                Event::Open(parent, parent_fd),
+                Event::Fsync(fd),
+                Event::Fsync(parent_fd),
+                Event::Close(parent_fd),
+                Event::EnsureFileDurable {
+                    target: EitherPathOrFd::Path(file.to_owned()),
+                    up_to: None,
+                },
+            ])
+            .unwrap();
+        }
+    }
 
     #[test]
     fn basic() {
-        let f = PathBuf::from("/root/data/log");
-        let fd = 1;
+        let mut harness = Harness::new(DurabilityChecker::default());
+
+        let f = harness.root.join("data/log");
+        let fd = harness.next_fd();
 
         let f_parent = f.parent().unwrap().to_owned();
-        let f_parent_fd = 11;
+        let f_parent_fd = harness.next_fd();
 
-        let mut checker = DurabilityChecker::default();
         // check no fsync on a file
         let events = [
-            Event::AddTrustedDir(PathBuf::from("/root")),
-            Event::CreateDir(PathBuf::from("/root/data")),
+            Event::CreateDir(PathBuf::from(f_parent.clone())),
             Event::Create(f.clone()),
             Event::Open(f.clone(), fd),
             Event::Write(WriteEvent {
@@ -633,7 +679,7 @@ mod tests {
         ];
 
         assert_eq!(
-            apply_events(&mut checker, events).unwrap_err(),
+            harness.apply_events(events).unwrap_err(),
             Error::DurabilityViolation(DurabilityViolationError::PendingChanges(PendingChanges {
                 pending_changes: vec![FileRange { start: 0, end: 10 }],
                 max_durable_pos: 0,
@@ -642,9 +688,10 @@ mod tests {
         );
 
         // file synced, parent dir not synced
-        checker.apply_event(Event::Fsync(fd)).unwrap();
+        harness.checker.apply_event(Event::Fsync(fd)).unwrap();
         assert_eq!(
-            checker
+            harness
+                .checker
                 .apply_event(Event::EnsureFileDurable {
                     target: EitherPathOrFd::Fd(fd),
                     up_to: None,
@@ -656,23 +703,22 @@ mod tests {
         );
 
         // sync parent dir, check should pass
-        apply_events(
-            &mut checker,
-            [
+        harness
+            .apply_events([
                 Event::Open(f_parent.clone(), f_parent_fd),
                 Event::Fsync(f_parent_fd),
                 Event::EnsureFileDurable {
                     target: EitherPathOrFd::Fd(fd),
                     up_to: None,
                 },
-            ],
-        )
-        .unwrap();
+            ])
+            .unwrap();
 
         // check rename
         // do not sync parent dir first
         let renamed = f.parent().unwrap().join("log_renamed");
-        checker
+        harness
+            .checker
             .apply_event(Event::Rename {
                 from: EitherPathOrFd::Fd(fd),
                 to: renamed.clone(),
@@ -680,7 +726,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            checker
+            harness
+                .checker
                 .apply_event(Event::EnsureFileDurable {
                     target: EitherPathOrFd::Fd(fd),
                     up_to: None,
@@ -691,9 +738,8 @@ mod tests {
             )),
         );
 
-        apply_events(
-            &mut checker,
-            [
+        harness
+            .apply_events([
                 Event::Open(f_parent, f_parent_fd),
                 Event::Fsync(f_parent_fd),
                 Event::Close(f_parent_fd),
@@ -701,23 +747,16 @@ mod tests {
                     target: EitherPathOrFd::Path(renamed),
                     up_to: None,
                 },
-            ],
-        )
-        .unwrap();
+            ])
+            .unwrap();
     }
 
     #[test]
     fn new_file_dirties_dir() {
-        let f = PathBuf::from("/root/data");
-        let fd = 1;
-
-        let mut checker = DurabilityChecker::default();
-        // check no fsync on a file
-        // Event::Open(f_parent, f_parent_fd),
-        // Event::Fsync(f_parent_fd),
+        let mut harness = Harness::new(DurabilityChecker::default());
+        let (f, fd) = harness.one_file();
 
         let events = [
-            Event::AddTrustedDir(PathBuf::from("/root")),
             Event::Create(f.clone()),
             Event::Open(f.clone(), fd),
             Event::Write(WriteEvent {
@@ -732,78 +771,43 @@ mod tests {
         ];
 
         assert_eq!(
-            apply_events(&mut checker, events).unwrap_err(),
+            harness.apply_events(events).unwrap_err(),
             Error::DurabilityViolation(DurabilityViolationError::ParentDirectoryNotSynced(
                 "/root".to_owned().into_boxed_str()
             )),
         );
     }
 
-    fn durable_create_dir(mut checker: &mut DurabilityChecker, path: &Path, dir_fd: i32) {
-        let events = [
-            Event::AddTrustedDir(PathBuf::from("/root")),
-            Event::CreateDir(path.to_owned()),
-            Event::Open(path.to_owned(), dir_fd),
-            Event::Fsync(dir_fd),
-            Event::EnsureDirDurable(path.to_owned()),
-        ];
-        apply_events(&mut checker, events).unwrap();
-    }
-
-    fn durable_create_empty_file(checker: &mut DurabilityChecker, file: &Path, fd: i32) {
-        let parent = file.parent().unwrap().to_owned();
-        let parent_fd = 9999;
-        apply_events(
-            checker,
-            [
-                Event::Create(file.to_owned()),
-                Event::Open(file.to_owned(), fd),
-                Event::Open(parent, 9999),
-                Event::Fsync(fd),
-                Event::Fsync(parent_fd),
-                Event::Close(parent_fd),
-                Event::EnsureFileDurable {
-                    target: EitherPathOrFd::Path(file.to_owned()),
-                    up_to: None,
-                },
-            ],
-        )
-        .unwrap()
-    }
-
     // TODO test ensure file durable with up_to other than None
 
     #[test]
-    fn fdatasync() {
-        let mut checker = DurabilityChecker::with_fdatasync_behavior(FdatsyncBehavior::Bsd);
-        // properly create directory
-        let dir = PathBuf::from("/root/data");
-        let dir_fd = 11;
-        durable_create_dir(&mut checker, &dir, dir_fd);
-
-        let f1 = PathBuf::from("/root/data/log1");
-        let f1_fd = 1;
-        durable_create_empty_file(&mut checker, &f1, f1_fd);
-
+    fn fdatasync_bsd_doesnt_sync_length() {
         // write 0, 10
         // fdatasync
         // ensure durable -> fail file not synced
-        apply_events(
-            &mut checker,
-            [
+        let mut harness = Harness::new(DurabilityChecker::with_fdatasync_behavior(
+            FdatsyncBehavior::Bsd,
+        ));
+
+        let (f, fd) = harness.one_file();
+
+        harness.durable_create_empty_file(&f, fd);
+
+        harness
+            .apply_events([
                 Event::Write(WriteEvent {
-                    fd: f1_fd,
+                    fd,
                     file_range: FileRange { start: 0, end: 10 },
                 }),
-                Event::Fdatasync(f1_fd),
-            ],
-        )
-        .unwrap();
+                Event::Fdatasync(fd),
+            ])
+            .unwrap();
 
         assert_eq!(
-            checker
+            harness
+                .checker
                 .apply_event(Event::EnsureFileDurable {
-                    target: EitherPathOrFd::Path(f1.to_owned()),
+                    target: EitherPathOrFd::Fd(fd),
                     up_to: None,
                 })
                 .unwrap_err(),
@@ -813,37 +817,74 @@ mod tests {
                 up_to: Horizon::MaxWrittenPos(9),
             })),
         );
+    }
 
-        let f2 = PathBuf::from("/root/data/log2");
-        let f2_fd = 2;
-        durable_create_empty_file(&mut checker, &f2, f2_fd);
-
-        // set len 11 (ran 10)
-        // datasync
+    #[test]
+    fn fsync_bsd_does_sync_length() {
         // write 0, 10
-        // ensure file durable -> ok
-        apply_events(
-            &mut checker,
-            [
-                Event::SetLen(f2_fd, 11),
-                Event::Fsync(f2_fd),
+        // fdatasync
+        // ensure durable -> ok
+        let mut harness = Harness::new(DurabilityChecker::with_fdatasync_behavior(
+            FdatsyncBehavior::Bsd,
+        ));
+
+        let (f, fd) = harness.one_file();
+
+        harness.durable_create_empty_file(&f, fd);
+
+        harness
+            .apply_events([
                 Event::Write(WriteEvent {
-                    fd: f2_fd,
+                    fd,
                     file_range: FileRange { start: 0, end: 10 },
                 }),
-                Event::Fdatasync(f2_fd),
+                Event::Fsync(fd),
+            ])
+            .unwrap();
+
+        harness
+            .checker
+            .apply_event(Event::EnsureFileDurable {
+                target: EitherPathOrFd::Fd(fd),
+                up_to: None,
+            })
+            .expect("should succeed");
+    }
+
+    #[test]
+    fn fdatasync_bsd_works_after_fsyncing_length() {
+        // set len 11
+        // fsync
+        // write 0, 10
+        // datasync
+        // ensure file durable -> ok
+        let mut harness = Harness::new(DurabilityChecker::with_fdatasync_behavior(
+            FdatsyncBehavior::Bsd,
+        ));
+
+        let (f, fd) = harness.one_file();
+
+        harness.durable_create_empty_file(&f, fd);
+
+        harness
+            .apply_events([
+                Event::SetLen(fd, 11),
+                Event::Fsync(fd),
+                Event::Write(WriteEvent {
+                    fd: fd,
+                    file_range: FileRange { start: 0, end: 10 },
+                }),
+                Event::Fdatasync(fd),
                 Event::EnsureFileDurable {
-                    target: EitherPathOrFd::Path(f2.to_owned()),
+                    target: EitherPathOrFd::Fd(fd),
                     up_to: None,
                 },
-            ],
-        )
-        .unwrap();
+            ])
+            .unwrap();
+    }
 
-        let f3 = PathBuf::from("/root/data/log3");
-        let f3_fd = 3;
-        durable_create_empty_file(&mut checker, &f3, f3_fd);
-
+    #[test]
+    fn fdatasync_bsd_correctly_keeps_pending_changes() {
         // set len 15
         // datasync
         // write 0, 11
@@ -851,22 +892,27 @@ mod tests {
         // write 20, 30
         // set len 18
         // Checking resulting pending changes.
-        let f4 = PathBuf::from("/root/data/log4");
-        let f4_fd = 4;
-        durable_create_empty_file(&mut checker, &f4, f4_fd);
+        let mut harness = Harness::new(DurabilityChecker::with_fdatasync_behavior(
+            FdatsyncBehavior::Bsd,
+        ));
+
+        let (f, fd) = harness.one_file();
+
+        harness.durable_create_empty_file(&f, fd);
+
         let events = [
-            Event::SetLen(f4_fd, 15),
-            Event::Fdatasync(f4_fd),
-            Event::Write(WriteEvent::new(f4_fd, 0, 11)),
-            Event::Write(WriteEvent::new(f4_fd, 5, 15)),
-            Event::Write(WriteEvent::new(f4_fd, 20, 10)),
-            Event::SetLen(f4_fd, 18),
+            Event::SetLen(fd, 15),
+            Event::Fdatasync(fd),
+            Event::Write(WriteEvent::new(fd, 0, 11)),
+            Event::Write(WriteEvent::new(fd, 5, 15)),
+            Event::Write(WriteEvent::new(fd, 20, 10)),
+            Event::SetLen(fd, 18),
         ];
 
-        apply_events(&mut checker, events).expect("should be ok");
+        harness.apply_events(events).expect("should be ok");
         {
-            let state = checker.state.borrow_mut();
-            let path_state = state.path_states.get(&f4).expect("state should exist");
+            let state = harness.checker.state.borrow_mut();
+            let path_state = state.path_states.get(&f).expect("state should exist");
 
             let file_state = match path_state {
                 PathState::File(f) => f,
@@ -881,65 +927,42 @@ mod tests {
                 ]
             );
         }
+    }
 
+    #[test]
+    fn fdatasync_bsd_durable_up_to() {
         // set len 15
         // write 0, 20
         // datasync
         // durable up to 15
-        // FIXME: fails
-        // let f5 = PathBuf::from("/root/data/log5");
-        // let f5_fd = 5;
-        // durable_create_empty_file(&mut checker, &f5, f5_fd);
-        // let events = [
-        //     Event::SetLen(f5_fd, 15),
-        //     Event::Write(WriteEvent::new(f5_fd, 0, 20)),
-        //     Event::Fdatasync(f5_fd),
-        //     Event::EnsureFileDurable {
-        //         target: EitherPathOrFd::Fd(f5_fd),
-        //         up_to: Some(15),
-        //     },
-        // ];
+        let mut harness = Harness::new(DurabilityChecker::with_fdatasync_behavior(
+            FdatsyncBehavior::Bsd,
+        ));
 
-        // apply_events(&mut checker, events).expect("should be ok");
+        let (f, fd) = harness.one_file();
 
-        // let state = checker.state.borrow_mut();
-        // let path_state = state.path_states.get(&f5).expect("state should exist");
+        harness.durable_create_empty_file(&f, fd);
 
-        // let file_state = match path_state {
-        //     PathState::File(f) => f,
-        //     PathState::Directory(_) => panic!("should be file, not a directory"),
-        // };
+        let events = [
+            Event::SetLen(fd, 15),
+            Event::Write(WriteEvent::new(fd, 0, 20)),
+            Event::Fdatasync(fd),
+            Event::EnsureFileDurable {
+                target: EitherPathOrFd::Fd(fd),
+                up_to: Some(15),
+            },
+        ];
 
-        // dbg!(&file_state.pending_changes);
-        // assert_eq!(
-        //     &file_state.pending_changes,
-        //     &[
-        //         FileRange::from_pos_and_buf_len(0, 11),
-        //         FileRange::from_pos_and_buf_len(5, 13), // [5, 18)
-        //     ]
-        // )
-
-        // TODO check what changes are left
-
-        // apply_events(
-        //     &mut checker,
-        //     [
-        //         Event::SetLen(file3.clone(), 11),
-        //         Event::Fsync(file3.clone()),
-        //         Event::Write(WriteEvent {
-        //             path: file3.clone(),
-        //             file_range: FileRange { start: 0, end: 12 },
-        //         }),
-        //         Event::Fdatasync(file3.clone()),
-        //         Event::EnsureFileDurable {
-        //             path: file3.to_owned(),
-        //             up_to: None,
-        //         },
-        //     ],
-        // )
-        // .unwrap();
+        // FIXME: no pending changes is surprising, change should still be pending
+        assert_eq!(
+            harness.apply_events(events).expect_err("should be ok"),
+            Error::DurabilityViolation(DurabilityViolationError::PendingChanges(PendingChanges {
+                pending_changes: vec![],
+                max_durable_pos: 0,
+                up_to: Horizon::UpTo(15),
+            }))
+        )
     }
 
-    // TODO write a test for fdatasync
     // TODO test synced_after_creation
 }
