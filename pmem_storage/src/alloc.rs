@@ -181,7 +181,7 @@ where
     // returns index of the slab in slabs and free slot idx in slab
     fn get_free_slab(&mut self) -> (usize, usize) {
         // if no slabs create new one and return it
-        if self.slabs.len() == 0 {
+        if self.slabs.is_empty() {
             let slab = self.make_new_slab();
             self.slabs.push(slab);
             return (self.slabs.len() - 1, 0);

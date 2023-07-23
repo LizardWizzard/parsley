@@ -4,7 +4,7 @@ use std::{cell::Ref, path::Path, rc::Rc};
 use glommio::io::{CloseResult, Directory, DmaBuffer, DmaFile, ReadResult};
 
 use crate::{EitherPathOrFd, Event};
-use crate::{FileRange, Instrument, WriteEvent};
+use crate::{Instrument, WriteEvent};
 
 type Result<T> = std::result::Result<T, glommio::GlommioError<()>>;
 
@@ -151,10 +151,11 @@ impl<I: Instrument + Clone> InstrumentedDmaFile<I> {
     pub async fn write_at(&self, buf: DmaBuffer, pos: u64) -> Result<usize> {
         // TODO 2 step write
         self.instrument
-            .apply_event(Event::Write(WriteEvent {
-                fd: self.file.as_raw_fd(),
-                file_range: FileRange::from_pos_and_buf_len(pos, buf.len() as u64),
-            }))
+            .apply_event(Event::Write(WriteEvent::new(
+                self.file.as_raw_fd(),
+                pos,
+                buf.len() as u64,
+            )))
             .unwrap();
 
         self.file.write_at(buf, pos).await

@@ -96,7 +96,7 @@ where
 
     fn freeze(self) -> Self::FROZEN;
 
-    fn insert(&mut self, range: RangeSpec<RangeType, DataType>) -> (); // TODO exclude overlapping ranges
+    fn insert(&mut self, range: RangeSpec<RangeType, DataType>); // TODO exclude overlapping ranges
 
     fn delete(
         &mut self,

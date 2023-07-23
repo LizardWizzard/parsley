@@ -101,7 +101,7 @@ impl<'key> Future for DurableMemoryStorageDelFuture<'key> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DurableMemoryStorage {
     data: HashMap<Vec<u8>, Vec<u8>>,
     // wal_writer
@@ -114,7 +114,7 @@ impl Storage for DurableMemoryStorage {
     type DelFuture<'key> = DurableMemoryStorageDelFuture<'key>;
 
     fn get<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::GetFuture<'key> {
-        DurableMemoryStorageGetFuture::new(&instance, key)
+        DurableMemoryStorageGetFuture::new(instance, key)
     }
 
     fn set<'key, 'value>(
@@ -126,14 +126,6 @@ impl Storage for DurableMemoryStorage {
     }
 
     fn delete<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::DelFuture<'key> {
-        DurableMemoryStorageDelFuture::new(&instance, key)
-    }
-}
-
-impl DurableMemoryStorage {
-    pub fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
+        DurableMemoryStorageDelFuture::new(instance, key)
     }
 }

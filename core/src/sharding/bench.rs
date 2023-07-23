@@ -53,11 +53,11 @@ pub fn get_benchmark_range_map<RangeMapType: RangeMap<Vec<u8>, ShardDatum>>() ->
 
 pub fn get_local_remote_bounds(shard_id: usize) -> ((u8, u8), ((u8, u8), (u8, u8))) {
     if shard_id == 0 {
-        return (BOUNDS.0, (BOUNDS.1, BOUNDS.2));
+        (BOUNDS.0, (BOUNDS.1, BOUNDS.2))
     } else if shard_id == 1 {
-        return (BOUNDS.1, (BOUNDS.0, BOUNDS.2));
+        (BOUNDS.1, (BOUNDS.0, BOUNDS.2))
     } else if shard_id == 2 {
-        return (BOUNDS.2, (BOUNDS.0, BOUNDS.1));
+        (BOUNDS.2, (BOUNDS.0, BOUNDS.1))
     } else {
         panic!("unexpected");
     }
@@ -374,7 +374,7 @@ where
         }
         // wait for update of rangemap
         loop {
-            if self.shard.state.borrow().datums.len() == 0 {
+            if self.shard.state.borrow().datums.is_empty() {
                 glommio::yield_if_needed().await;
             } else {
                 break;

@@ -180,7 +180,7 @@ where
         Self::FROZEN::new(self.items)
     }
 
-    fn insert(&mut self, range: RangeSpec<RangeType, DataType>) -> () {
+    fn insert(&mut self, range: RangeSpec<RangeType, DataType>) {
         let result = self.items.binary_search(&range);
         match result {
             Ok(_) => (),                               // range already exists

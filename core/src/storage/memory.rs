@@ -96,7 +96,7 @@ impl<'key> Future for MemoryStorageDelFuture<'key> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MemoryStorage {
     data: HashMap<Vec<u8>, Vec<u8>>,
 }
@@ -120,13 +120,5 @@ impl Storage for MemoryStorage {
 
     fn delete<'key>(instance: &Rc<RefCell<Self>>, key: &'key [u8]) -> Self::DelFuture<'key> {
         MemoryStorageDelFuture::new(instance, key)
-    }
-}
-
-impl MemoryStorage {
-    pub fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
     }
 }

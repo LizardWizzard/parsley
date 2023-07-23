@@ -47,9 +47,8 @@ where
     BitsImpl<{ BLOCK_SIZE }>: Bits,
 {
     pub fn new(config: Config) -> Self {
-        let data_dir = config.base_dir.clone();
         Self {
-            alloc: PSlabAlloc::new(data_dir),
+            alloc: PSlabAlloc::new(config.base_dir),
             search_index: BTreeMap::new(),
         }
     }
@@ -60,7 +59,7 @@ where
         // TODO duplicate keys, free one with lower allocation id
         // TODO remove dangling keys?
         // todo!()
-        let alloc = PSlabAlloc::new(config.base_dir.clone());
+        let alloc = PSlabAlloc::new(config.base_dir);
         Ok(Self {
             alloc,
             search_index,
@@ -69,10 +68,9 @@ where
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         // SAFETY: the value of VALUE_SIZE was previously safely written to storage, so it is safe to read it back
-        match self.search_index.get(key) {
-            Some(pptr) => Some(unsafe { ptr::read(pptr.vptr).to_vec() }),
-            None => None,
-        }
+        self.search_index
+            .get(key)
+            .map(|pptr| unsafe { ptr::read(pptr.vptr).to_vec() })
     }
 
     // in current architecture set is always an allocation

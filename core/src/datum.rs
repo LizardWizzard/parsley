@@ -22,24 +22,15 @@ pub fn busy_sleep(dur: Duration) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BTreeModelStorage {
     data: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl BTreeModelStorage {
-    pub fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
-    }
-
     pub async fn get(instance: &Rc<RefCell<Self>>, key: &[u8]) -> Option<Vec<u8>> {
         timer::sleep(Duration::from_micros(40)).await;
-        match instance.borrow().data.get(key) {
-            Some(value) => Some(value.to_vec()),
-            None => None,
-        }
+        instance.borrow().data.get(key).map(|value| value.to_vec())
     }
 
     // pub async fn set(&mut self, key: &[u8], value: &[u8]) -> () {
@@ -56,28 +47,19 @@ impl BTreeModelStorage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LSMTreeModelStorage {
     data: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl LSMTreeModelStorage {
-    pub fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
-    }
-
     pub async fn get(instance: &Rc<RefCell<Self>>, key: &[u8]) -> Option<Vec<u8>> {
         // FIXME because we borrow before polling, polling occurs "inside" borrowing,
         // so it breaks when there is an await in storage
         // one possible way to fix it implement get/set methods as ones returning futures, which wrap Rc<RefCell
         // and borrow only for poll duration.
         timer::sleep(Duration::from_micros(80)).await;
-        match instance.borrow().data.get(key) {
-            Some(value) => Some(value.to_vec()),
-            None => None,
-        }
+        instance.borrow().data.get(key).map(|value| value.to_vec())
     }
 
     // pub async fn set(&mut self, key: &[u8], value: &[u8]) -> () {
@@ -123,10 +105,7 @@ impl PMemDatumStorage {
     }
 
     pub async fn get(instance: &Rc<RefCell<Self>>, key: &[u8]) -> Option<Vec<u8>> {
-        match instance.borrow().data.get(key) {
-            Some(value) => Some(value.to_vec()),
-            None => None,
-        }
+        instance.borrow().data.get(key).map(|value| value.to_vec())
     }
 
     // pub async fn set(&mut self, key: &[u8], value: &[u8]) -> () {
@@ -177,18 +156,12 @@ impl Datum {
     // TODO optimize via read into AsyncWrite without reference return
     pub async fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         match &self.storage {
-            DatumStorage::MemoryStorage(storage) => {
-                return Some(MemoryStorage::get(storage, &key).await?)
-            }
-            DatumStorage::BTreeModelStorage(storage) => {
-                return Some(BTreeModelStorage::get(&storage, &key).await?)
-            }
+            DatumStorage::MemoryStorage(storage) => MemoryStorage::get(storage, key).await,
+            DatumStorage::BTreeModelStorage(storage) => BTreeModelStorage::get(storage, key).await,
             DatumStorage::LSMTreeModelStorage(storage) => {
-                return Some(LSMTreeModelStorage::get(&storage, key).await?)
+                LSMTreeModelStorage::get(storage, key).await
             }
-            DatumStorage::PMemStorage(storage) => {
-                return Some(PMemDatumStorage::get(storage, key).await?)
-            }
+            DatumStorage::PMemStorage(storage) => PMemDatumStorage::get(storage, key).await,
         }
     }
 
@@ -197,13 +170,13 @@ impl Datum {
             DatumStorage::MemoryStorage(storage) => MemoryStorage::set(storage, key, value).await,
             // FIXME temporary copying for model implementations
             DatumStorage::BTreeModelStorage(storage) => {
-                BTreeModelStorage::set(&storage, key.to_vec(), value.to_vec()).await
+                BTreeModelStorage::set(storage, key.to_vec(), value.to_vec()).await
             }
             DatumStorage::LSMTreeModelStorage(storage) => {
-                LSMTreeModelStorage::set(&storage, key.to_vec(), value.to_vec()).await
+                LSMTreeModelStorage::set(storage, key.to_vec(), value.to_vec()).await
             }
             DatumStorage::PMemStorage(storage) => {
-                PMemDatumStorage::set(&storage, key.to_vec(), value.to_vec()).await
+                PMemDatumStorage::set(storage, key.to_vec(), value.to_vec()).await
             }
         }
     }

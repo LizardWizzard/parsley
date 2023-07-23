@@ -12,10 +12,10 @@ pub struct PPtrPersistent {
 
 impl PPtrPersistent {
     pub fn dangling() -> Self {
-        return Self {
+        Self {
             allocation_id: 0,
             offset: 0,
-        };
+        }
     }
 
     pub fn is_dangling(self) -> bool {

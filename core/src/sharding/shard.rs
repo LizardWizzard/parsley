@@ -53,7 +53,7 @@ impl Placement {
     }
 
     pub fn first_n_cores(n: usize) -> Vec<Self> {
-        (0..n).map(|core| Self::new(core)).collect()
+        (0..n).map(Self::new).collect()
     }
 }
 
@@ -199,9 +199,11 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
         let rangemap: Arc<RangeMapType::FROZEN> = Arc::new(RangeMapType::new().freeze());
 
         let mut storages = vec![
-            DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::new()))),
-            DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::new()))),
-            DatumStorage::LSMTreeModelStorage(Rc::new(RefCell::new(LSMTreeModelStorage::new()))),
+            DatumStorage::MemoryStorage(Rc::new(RefCell::new(MemoryStorage::default()))),
+            DatumStorage::BTreeModelStorage(Rc::new(RefCell::new(BTreeModelStorage::default()))),
+            DatumStorage::LSMTreeModelStorage(Rc::new(
+                RefCell::new(LSMTreeModelStorage::default()),
+            )),
         ];
 
         if with_pmem {
@@ -229,7 +231,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
     }
 
     pub fn state_mut(&self) -> RefMut<'_, ShardState<RangeMapType>> {
-        (&*self.state).borrow_mut()
+        (*self.state).borrow_mut()
     }
 
     pub fn next_op(&mut self) -> usize {
@@ -248,12 +250,12 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
         sender
             .send(msg)
             .await
-            .expect(&format!("failed sendto. src {:?} dst {:?}", src, idx))
+            .unwrap_or_else(|_| panic!("failed sendto. src {:?} dst {:?}", src, idx))
     }
 
     async fn healthcheck(
         &self,
-        shard_receivers: &Vec<ConnectedReceiver<Message<Data<RangeMapType>>>>,
+        shard_receivers: &[ConnectedReceiver<Message<Data<RangeMapType>>>],
     ) -> Result<(), HealthcheckError> {
         let state = self.state.borrow();
         let self_id = state.id;
@@ -277,13 +279,12 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
             .enumerate()
             .filter(|(idx, _)| *idx != self_id)
         {
-            let msg = sndr
-                .recv()
-                .await
-                .ok_or(HealthcheckError::FailedToRecv(format!(
+            let msg = sndr.recv().await.ok_or_else(|| {
+                HealthcheckError::FailedToRecv(format!(
                     "Healthcheck failed to send from {:} to {:}",
                     self_id, idx
-                )))?;
+                ))
+            })?;
             if msg.source_id != idx {
                 Err(HealthcheckError::IncorrectRecv(format!(
                     "Healthcheck failed correctly recv. Expected source {:} got {:}",
@@ -409,7 +410,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
                                 // and during update check that all datums from rangemap belonging to current shard actually exist
                                 let storage = instance.state.borrow().benchmark_get_datum_storage();
                                 let mut borrowed = instance.state_mut();
-                                for item in (&*rangemap).clone().into_iter() {
+                                for item in (*rangemap).clone().into_iter() {
                                     if item.data.shard_id == self_id {
                                         let len = borrowed.datums.len();
                                         borrowed.datums.push(Datum::new(
@@ -510,8 +511,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
             let id = state.next_op();
             let fut = ForwardedGet::new(id, self.clone());
             drop(state);
-            self.send_to(shard_id, Data::GetRequest { id: id, key: key })
-                .await;
+            self.send_to(shard_id, Data::GetRequest { id, key }).await;
             return fut.await;
         }
         state.stats.served_own_gets += 1;
@@ -521,7 +521,7 @@ impl<RangeMapType: RangeMap<Vec<u8>, ShardDatum> + 'static> Shard<RangeMapType> 
         if let Some(data) = self.state.borrow().datums[datum_id].get(&key).await {
             return Some(data);
         }
-        return None;
+        None
     }
 
     // async fn set(&mut self, key: &[u8], value: &[u8]) {
