@@ -556,7 +556,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
             .current_segment_writer_state
             .pending_writes
             // or equal is needed to wait for incomplete buf we've just scheduled to write
-            .drain_filter(|(write_pos, _)| *write_pos <= flush_file_pos)
+            .extract_if(|(write_pos, _)| *write_pos <= flush_file_pos)
             .map(|(_, join_handle)| join_handle)
             .collect(); // we can probably avoid this collect
 

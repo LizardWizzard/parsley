@@ -1,4 +1,4 @@
-#![feature(drain_filter)]
+#![feature(extract_if)]
 
 pub mod reader;
 pub mod writer;
