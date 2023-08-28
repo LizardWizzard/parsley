@@ -313,12 +313,6 @@ mod tests {
 
     #[test]
     fn wake() {
-        // FIXME: join handle needs to keep its own Ref?
-        // note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
-        // [parsley_sim/src/sim.rs:113] Rc::strong_count(&task) = 34093252607
-        // [parsley_sim/src/sim.rs:113] Rc::strong_count(&task) = 2
-        // tcache_thread_shutdown(): unaligned tcache chunk detected
-
         let env = SimEnv::new(0);
         env.run(|e| async move {
             let waker_slot = Rc::new(RefCell::new(None));
