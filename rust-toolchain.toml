@@ -1,5 +1,5 @@
 [toolchain]
-channel = "nightly-2022-11-08"
-components = []
+channel = "nightly"
+components = ["miri"]
 targets = []
 profile = "default"
