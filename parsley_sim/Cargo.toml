@@ -1,0 +1,15 @@
+[package]
+name = "parsley_sim"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+glommio.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
+# fast, cryptografically insecure, used as default on many plaftorms (.NET, Julia)
+# https://prng.di.unimi.it/
+rand_xoshiro = "0.6.0"
+rand = "0.8.5"
