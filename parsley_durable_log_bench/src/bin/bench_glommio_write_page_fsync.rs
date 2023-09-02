@@ -26,7 +26,7 @@ fn main() -> Result<(), glommio::GlommioError<()>> {
         target_dir.sync().await.expect("failed to sync wal dir");
         let file = Rc::new(target_dir.create_file("test").await?);
         if pre_allocate {
-            file.pre_allocate(FILE_SIZE as u64).await?;
+            file.pre_allocate(FILE_SIZE as u64, false).await?;
         }
         // file
         // file

@@ -33,9 +33,9 @@ crc32fast = "1"
 futures = "0.3"
 # TODO rule out the duplication
 futures-lite = "1.12"
-# TODO update, there are breaking changes (pre_allocate has new flag)
-# glommio = { git = "https://github.com/DataDog/glommio.git", rev = "d6da35914c1869048c98b4e09a002fe340cc6e9b" }
-glommio = "0.7"
+# Current master. No particular reason. There was no release for quite some time 
+# and there were general improvements that were not released yet
+glommio = { git = "https://github.com/DataDog/glommio.git", rev = "d93c460c3def6b11a224892657a6a6a80edf6311" }
 histogram = "0.6.9"
 pico-args = "0.5"
 thiserror = "1"

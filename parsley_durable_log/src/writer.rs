@@ -164,7 +164,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
                 // think about .partial extension
                 // TODO unify with segment switch code, e g new_segment_file or something
                 let segment_file = wal_dir.create_file(wal_file_name(0)).await?;
-                segment_file.pre_allocate(segment_size).await?;
+                segment_file.pre_allocate(segment_size, false).await?;
                 segment_file.fdatasync().await?;
                 // it is required for durability to sync parent directories after creating new files
                 // TODO is it the correct ordering, detect the wrong one?
@@ -359,7 +359,7 @@ impl<I: Instrument + Clone + 'static> WalWriter<I> {
         let new_segment_file = InstrumentedDmaFile::create(&new_segment_path, instrument).await?;
         // Use pre-allocate to reduce pressure on the fs to avoid blocking on
         // block allocation requests on the hot path for future writes
-        new_segment_file.pre_allocate(segment_size).await?;
+        new_segment_file.pre_allocate(segment_size, false).await?;
         // Sync file contents to disk
         new_segment_file.fdatasync().await?;
         // Running sync on directory is required for durability of newly created file directory entry

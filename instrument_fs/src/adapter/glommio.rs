@@ -191,8 +191,8 @@ impl<I: Instrument + Clone> InstrumentedDmaFile<I> {
         self.file.fdatasync().await
     }
 
-    pub async fn pre_allocate(&self, size: u64) -> Result<()> {
-        self.file.pre_allocate(size).await
+    pub async fn pre_allocate(&self, size: u64, keep_size: bool) -> Result<()> {
+        self.file.pre_allocate(size, keep_size).await
     }
 
     pub async fn hint_extent_size(&self, size: usize) -> Result<i32> {
