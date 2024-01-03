@@ -9,6 +9,9 @@ edition = "2021"
 glommio.workspace = true
 futures.workspace = true
 futures-lite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
 # fast, cryptografically insecure, used as default on many plaftorms (.NET, Julia)
 # https://prng.di.unimi.it/
 rand_xoshiro = "0.6.0"
