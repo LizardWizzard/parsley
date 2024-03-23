@@ -65,7 +65,7 @@ pub trait Task<T> {
 
 pub trait JoinHandle<T> {}
 
-pub trait Env: Clone {
+pub trait Env: Clone + 'static {
     type Net: Net;
     type Fs: Fs;
     type Time: Time;

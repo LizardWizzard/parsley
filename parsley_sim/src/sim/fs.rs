@@ -206,7 +206,7 @@ impl crate::Fs for SimFs {
 mod tests {
     use crate::{real::RealEnv, sim::SimEnv, Env, Fs};
 
-    fn test_read_write_file(env: impl Env + 'static) {
+    fn test_read_write_file(env: impl Env) {
         env.clone().run(async move {
             let file = env.fs().file_create("foo").await.unwrap();
         });
