@@ -60,7 +60,7 @@ impl Display for PendingChanges {
                         if change.end <= up_to {
                             f.write_fmt(format_args!("    {} earlier than specified up to {}", change, up_to))?
                         } else {
-                            f.write_fmt(format_args!("    {} crosses specified up to {}", change, up_to))?                           
+                            f.write_fmt(format_args!("    {} crosses specified up to {}", change, up_to))?
                         }
                     },
                     Horizon::MaxWrittenPos(max_written_pos) => {
