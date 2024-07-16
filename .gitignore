@@ -3,3 +3,4 @@
 bench_logs
 .python-version
 .vscode
+test_utils/test_data/
